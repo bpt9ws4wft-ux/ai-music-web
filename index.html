@@ -410,6 +410,17 @@
           <input class="file-input" id="audioInput" type="file" accept="audio/*">
           <div class="upload-meta" id="uploadMeta">尚未选择音频文件。</div>
           <audio id="audioPlayer" class="audio-player" controls preload="metadata"></audio>
+          <div class="button-row">
+            <button class="btn btn-secondary" id="backendProcessBtn" type="button">发送到后端处理</button>
+          </div>
+          <div class="preview-card" style="margin-top: 12px;">
+            <div class="meter-title">
+              <span>后端处理结果</span>
+              <span id="backendStatus">等待上传</span>
+            </div>
+            <audio id="backendAudioPlayer" class="audio-player" controls preload="metadata"></audio>
+            <p class="section-copy" style="margin-top: 12px; margin-bottom: 0;">本地 FastAPI 后端返回的音频。当前 v2.1 只做原样返回，未来会替换为真实 Auto-Tune。</p>
+          </div>
         </div>
 
         <div style="margin-top: 18px;">
@@ -687,6 +698,9 @@
     const audioInput = document.getElementById('audioInput');
     const uploadMeta = document.getElementById('uploadMeta');
     const audioPlayer = document.getElementById('audioPlayer');
+    const backendProcessBtn = document.getElementById('backendProcessBtn');
+    const backendStatus = document.getElementById('backendStatus');
+    const backendAudioPlayer = document.getElementById('backendAudioPlayer');
     const recordBtn = document.getElementById('recordBtn');
     const recordTimer = document.getElementById('recordTimer');
     const tuneSlider = document.getElementById('tuneSlider');
@@ -752,7 +766,9 @@
     let recording = false;
     let recordSeconds = 0;
     let recordTimerId = null;
+    let selectedUploadFile = null;
     let currentObjectUrl = null;
+    let currentBackendUrl = null;
     let currentRecordUrl = null;
     let mediaRecorder = null;
     let mediaStream = null;
@@ -769,6 +785,13 @@
       if (currentObjectUrl) {
         URL.revokeObjectURL(currentObjectUrl);
         currentObjectUrl = null;
+      }
+    }
+
+    function releaseBackendUrl() {
+      if (currentBackendUrl) {
+        URL.revokeObjectURL(currentBackendUrl);
+        currentBackendUrl = null;
       }
     }
 
@@ -1521,6 +1544,66 @@
       stopBeatPreview();
     });
 
+    function resetBackendResult(statusText = '等待上传') {
+      releaseBackendUrl();
+      backendAudioPlayer.removeAttribute('src');
+      backendAudioPlayer.style.display = 'none';
+      backendStatus.textContent = statusText;
+    }
+
+    async function processUploadedVocalWithBackend() {
+      if (!selectedUploadFile) {
+        backendStatus.textContent = '请先选择音频';
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('file', selectedUploadFile);
+
+      backendProcessBtn.disabled = true;
+      backendProcessBtn.textContent = '处理中...';
+      backendStatus.textContent = '正在发送到后端';
+      resetBackendResult('正在处理');
+
+      try {
+        const response = await fetch('http://127.0.0.1:8000/process-vocal', {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!response.ok) {
+          let message = `后端返回错误：${response.status}`;
+          try {
+            const errorData = await response.json();
+            if (errorData.detail) {
+              message = errorData.detail;
+            }
+          } catch (error) {
+            // Keep the generic message when the server response is not JSON.
+          }
+          throw new Error(message);
+        }
+
+        const processedBlob = await response.blob();
+        releaseBackendUrl();
+        currentBackendUrl = URL.createObjectURL(processedBlob);
+        backendAudioPlayer.src = currentBackendUrl;
+        backendAudioPlayer.style.display = 'block';
+        backendAudioPlayer.load();
+        backendStatus.textContent = '已返回';
+      } catch (error) {
+        backendStatus.textContent = '后端不可用';
+        console.error(error);
+      } finally {
+        backendProcessBtn.disabled = false;
+        backendProcessBtn.textContent = '发送到后端处理';
+      }
+    }
+
+    backendProcessBtn.addEventListener('click', () => {
+      processUploadedVocalWithBackend();
+    });
+
     function setRecordUi(status) {
       recordStatusBadge.textContent = status;
       recordPreviewLabel.textContent = status;
@@ -1548,6 +1631,8 @@
       const file = event.target.files[0];
 
       releaseUploadUrl();
+      selectedUploadFile = null;
+      resetBackendResult('等待上传');
 
       if (!file) {
         uploadMeta.textContent = '尚未选择音频文件。';
@@ -1584,11 +1669,13 @@
         return;
       }
 
+      selectedUploadFile = file;
       currentObjectUrl = URL.createObjectURL(file);
       audioPlayer.src = currentObjectUrl;
       audioPlayer.style.display = 'block';
       audioPlayer.load();
       uploadMeta.textContent = `已选择：${file.name}（${Math.max(1, Math.round(file.size / 1024))} KB）`;
+      backendStatus.textContent = '已选择，等待处理';
       previewUpload.textContent = file.name;
       previewWaveLabel.textContent = '已上传';
       try {
