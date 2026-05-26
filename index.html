@@ -657,6 +657,11 @@
               <div class="preview-value" id="beatRecommendationReason">暂无 Beat 推荐</div>
             </div>
           </div>
+          <div class="button-row" style="margin-top: 12px;">
+            <button class="btn btn-primary" id="playBeatBtn">播放推荐 Beat</button>
+            <button class="btn btn-secondary" id="stopBeatBtn">停止 Beat</button>
+          </div>
+          <p class="footer-note" id="beatPreviewHint" style="margin-bottom:0;">浏览器合成的节奏预览，不是 AI 生成成品。</p>
         </div>
 
         <p class="footer-note">当前版本不连接后端、不调用真实 AI、不做真实修音；录音为浏览器本地录音。</p>
@@ -717,6 +722,9 @@
     const beatRecommendationBpm = document.getElementById('beatRecommendationBpm');
     const beatRecommendationChords = document.getElementById('beatRecommendationChords');
     const beatRecommendationReason = document.getElementById('beatRecommendationReason');
+    const playBeatBtn = document.getElementById('playBeatBtn');
+    const stopBeatBtn = document.getElementById('stopBeatBtn');
+    const beatPreviewHint = document.getElementById('beatPreviewHint');
 
     const recordAudioPlayer = document.getElementById('recordAudioPlayer');
     const recordPreviewLabel = document.getElementById('recordPreviewLabel');
@@ -734,6 +742,11 @@
     let recordingChunks = [];
     let audioContext = null;
     let lastPitchResult = null;
+    let beatPreviewPlaying = false;
+    let beatPreviewTimer = null;
+    let beatPreviewStep = 0;
+    let beatPreviewNextStepTime = 0;
+    let beatPreviewActiveNodes = [];
 
     function releaseUploadUrl() {
       if (currentObjectUrl) {
@@ -878,6 +891,8 @@
       beatRecommendationBpm.textContent = '--';
       beatRecommendationChords.textContent = '--';
       beatRecommendationReason.textContent = '暂无 Beat 推荐';
+      stopBeatPreview();
+      updateBeatPreviewHint();
     }
 
     const noteNames = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -1012,6 +1027,7 @@
         beatRecommendationBpm.textContent = '--';
         beatRecommendationChords.textContent = '--';
         beatRecommendationReason.textContent = '暂无 Beat 推荐';
+        updateBeatPreviewHint();
         return;
       }
 
@@ -1024,6 +1040,7 @@
         beatRecommendationBpm.textContent = '--';
         beatRecommendationChords.textContent = '--';
         beatRecommendationReason.textContent = '暂无 Beat 推荐';
+        updateBeatPreviewHint();
         return;
       }
 
@@ -1037,6 +1054,7 @@
         beatRecommendationBpm.textContent = '100-120';
         beatRecommendationChords.textContent = 'I - V - vi - IV';
         beatRecommendationReason.textContent = 'Auto-Tune 强度较高，推荐更稳定、偏电子的节奏走向。';
+        updateBeatPreviewHint();
         return;
       }
 
@@ -1046,6 +1064,7 @@
         beatRecommendationBpm.textContent = '72-88';
         beatRecommendationChords.textContent = 'i - VI - III - VII';
         beatRecommendationReason.textContent = '小调 + 低音区更适合沉稳、带有压迫感的 Trap 结构。';
+        updateBeatPreviewHint();
         return;
       }
 
@@ -1055,6 +1074,7 @@
         beatRecommendationBpm.textContent = '78-92';
         beatRecommendationChords.textContent = 'i - iv - VI - V';
         beatRecommendationReason.textContent = '小调且偏低时，适合更细腻、情绪化的 R&B 节奏。';
+        updateBeatPreviewHint();
         return;
       }
 
@@ -1064,6 +1084,7 @@
         beatRecommendationBpm.textContent = '92-112';
         beatRecommendationChords.textContent = 'I - V - vi - IV';
         beatRecommendationReason.textContent = '大调且音准基本准确时，适合自然、稳定的流行节奏。';
+        updateBeatPreviewHint();
         return;
       }
 
@@ -1073,6 +1094,7 @@
         beatRecommendationBpm.textContent = '110-124';
         beatRecommendationChords.textContent = 'I - vi - IV - V';
         beatRecommendationReason.textContent = '大调且高音区更适合轻盈、清爽的电子节奏。';
+        updateBeatPreviewHint();
         return;
       }
 
@@ -1081,6 +1103,229 @@
       beatRecommendationBpm.textContent = '86-104';
       beatRecommendationChords.textContent = 'I - vi - IV - V';
       beatRecommendationReason.textContent = '当前条件不满足特殊规则时，推荐一套更平衡的自然节奏方案。';
+      updateBeatPreviewHint();
+    }
+
+    function updateBeatPreviewHint() {
+      const style = beatRecommendationStyle.textContent;
+      if (!style || style === '暂无 Beat 推荐') {
+        beatPreviewHint.textContent = '浏览器合成的节奏预览，不是 AI 生成成品。';
+        return;
+      }
+
+      if (beatPreviewPlaying) {
+        beatPreviewHint.textContent = `正在播放 ${style} 的浏览器合成节奏预览，不是 AI 生成成品。`;
+      } else {
+        beatPreviewHint.textContent = '浏览器合成的节奏预览，不是 AI 生成成品。';
+      }
+    }
+
+    function getCurrentBeatRecommendation() {
+      const style = beatRecommendationStyle.textContent;
+      const bpmText = beatRecommendationBpm.textContent;
+
+      if (!style || style === '暂无 Beat 推荐' || !bpmText || bpmText === '--') {
+        return null;
+      }
+
+      const bpm = Number.parseInt(bpmText.split('-')[0], 10);
+      if (!Number.isFinite(bpm)) {
+        return null;
+      }
+
+      return { style, bpm };
+    }
+
+    function createNoiseBuffer(duration = 0.12) {
+      const context = ensureAudioContext();
+      const length = Math.max(1, Math.floor(context.sampleRate * duration));
+      const buffer = context.createBuffer(1, length, context.sampleRate);
+      const data = buffer.getChannelData(0);
+
+      for (let i = 0; i < length; i += 1) {
+        data[i] = Math.random() * 2 - 1;
+      }
+
+      return buffer;
+    }
+
+    function trackBeatNode(node) {
+      beatPreviewActiveNodes.push(node);
+    }
+
+    function releaseBeatNodes() {
+      beatPreviewActiveNodes.forEach((node) => {
+        try {
+          node.stop(0);
+        } catch (error) {
+          // 节点可能已经结束，忽略即可。
+        }
+
+        try {
+          node.disconnect();
+        } catch (error) {
+          // 节点已断开时不做处理。
+        }
+      });
+      beatPreviewActiveNodes = [];
+    }
+
+    function playKick(time) {
+      const context = ensureAudioContext();
+      const osc = context.createOscillator();
+      const gain = context.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(140, time);
+      osc.frequency.exponentialRampToValueAtTime(50, time + 0.16);
+      gain.gain.setValueAtTime(0.8, time);
+      gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.14);
+
+      osc.connect(gain);
+      gain.connect(context.destination);
+      trackBeatNode(osc);
+      osc.start(time);
+      osc.stop(time + 0.16);
+    }
+
+    function playSnare(time) {
+      const context = ensureAudioContext();
+      const noise = context.createBufferSource();
+      const filter = context.createBiquadFilter();
+      const gain = context.createGain();
+      noise.buffer = createNoiseBuffer(0.12);
+      noise.loop = false;
+      filter.type = 'bandpass';
+      filter.frequency.value = 1800;
+      gain.gain.setValueAtTime(0.22, time);
+      gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.12);
+
+      noise.connect(filter);
+      filter.connect(gain);
+      gain.connect(context.destination);
+      trackBeatNode(noise);
+      noise.start(time);
+      noise.stop(time + 0.12);
+    }
+
+    function playHiHat(time) {
+      const context = ensureAudioContext();
+      const noise = context.createBufferSource();
+      const filter = context.createBiquadFilter();
+      const gain = context.createGain();
+      noise.buffer = createNoiseBuffer(0.08);
+      noise.loop = false;
+      filter.type = 'highpass';
+      filter.frequency.value = 8000;
+      gain.gain.setValueAtTime(0.12, time);
+      gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.05);
+
+      noise.connect(filter);
+      filter.connect(gain);
+      gain.connect(context.destination);
+      trackBeatNode(noise);
+      noise.start(time);
+      noise.stop(time + 0.05);
+    }
+
+    function getBeatPattern(style) {
+      if (style === '沉浸 Trap') {
+        return {
+          kick: [1, 0, 0, 0, 1, 0, 0, 0],
+          snare: [0, 0, 1, 0, 0, 0, 1, 0],
+          hat: [1, 0, 1, 0, 1, 0, 1, 0],
+        };
+      }
+
+      if (style === '情绪 R&B') {
+        return {
+          kick: [1, 0, 0, 0, 1, 0, 0, 0],
+          snare: [0, 0, 1, 0, 0, 0, 1, 0],
+          hat: [0, 1, 0, 0, 0, 1, 0, 0],
+        };
+      }
+
+      if (style === '流行节奏') {
+        return {
+          kick: [1, 0, 1, 0, 1, 0, 1, 0],
+          snare: [0, 1, 0, 1, 0, 1, 0, 1],
+          hat: [1, 0, 1, 0, 1, 0, 1, 0],
+        };
+      }
+
+      if (style === '自然平衡节奏') {
+        return {
+          kick: [1, 0, 1, 0, 1, 0, 1, 0],
+          snare: [0, 1, 0, 1, 0, 1, 0, 1],
+          hat: [1, 0, 1, 0, 1, 0, 1, 0],
+        };
+      }
+
+      return {
+        kick: [1, 0, 1, 0, 1, 0, 1, 0],
+        snare: [0, 1, 0, 1, 0, 1, 0, 1],
+        hat: [1, 1, 1, 1, 1, 1, 1, 1],
+      };
+    }
+
+    function scheduleBeatStep(style, bpm, time) {
+      const pattern = getBeatPattern(style);
+      const step = beatPreviewStep % pattern.kick.length;
+
+      if (pattern.kick[step]) {
+        playKick(time);
+      }
+      if (pattern.snare[step]) {
+        playSnare(time);
+      }
+      if (pattern.hat[step]) {
+        playHiHat(time);
+      }
+
+      beatPreviewStep += 1;
+      beatPreviewNextStepTime += 60 / bpm / 2;
+    }
+
+    async function startBeatPreview() {
+      const recommendation = getCurrentBeatRecommendation();
+      if (!recommendation) {
+        beatPreviewHint.textContent = '暂无 Beat 推荐，先完成音高检测再播放。';
+        return;
+      }
+
+      stopBeatPreview();
+      const context = ensureAudioContext();
+      if (context.state === 'suspended') {
+        await context.resume();
+      }
+
+      beatPreviewPlaying = true;
+      beatPreviewStep = 0;
+      beatPreviewNextStepTime = context.currentTime + 0.05;
+      updateBeatPreviewHint();
+
+      beatPreviewTimer = setInterval(() => {
+        if (!beatPreviewPlaying) {
+          return;
+        }
+
+        const now = context.currentTime;
+        while (beatPreviewNextStepTime <= now + 0.08) {
+          scheduleBeatStep(recommendation.style, recommendation.bpm, beatPreviewNextStepTime);
+        }
+      }, 25);
+    }
+
+    function stopBeatPreview() {
+      beatPreviewPlaying = false;
+
+      if (beatPreviewTimer) {
+        clearInterval(beatPreviewTimer);
+        beatPreviewTimer = null;
+      }
+
+      releaseBeatNodes();
+      updateBeatPreviewHint();
     }
 
     function estimatePitchFromBuffer(audioBuffer) {
@@ -1219,6 +1464,14 @@
 
     modeSelect.addEventListener('change', () => {
       updateTuningAnalysis();
+    });
+
+    playBeatBtn.addEventListener('click', () => {
+      startBeatPreview();
+    });
+
+    stopBeatBtn.addEventListener('click', () => {
+      stopBeatPreview();
     });
 
     function setRecordUi(status) {
@@ -1482,6 +1735,7 @@
     updateAutoTuneSimulation();
     updatePreviewSummary();
     scaleHint.textContent = buildScaleHint(keySelect.value, modeSelect.value);
+    updateBeatPreviewHint();
   </script>
 </body>
 </html>
