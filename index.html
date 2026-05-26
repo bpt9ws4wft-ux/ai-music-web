@@ -1,0 +1,1488 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI 音乐创作工具 MVP</title>
+  <style>
+    :root {
+      --bg: #090b12;
+      --panel: #111727;
+      --panel-2: #151d31;
+      --line: #263046;
+      --text: #f3f5ff;
+      --muted: #a9b3cb;
+      --accent: #8b5cf6;
+      --accent-2: #22d3ee;
+      --success: #34d399;
+      --warning: #f59e0b;
+      --danger: #f87171;
+      --shadow: 0 18px 40px rgba(15, 24, 44, 0.35);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(34, 211, 238, 0.12), transparent 16%),
+        linear-gradient(180deg, #090b12, #0d1220 55%, #090b12);
+      color: var(--text);
+    }
+
+    .app {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 28px 20px 48px;
+    }
+
+    .page-title {
+      margin: 0 0 10px;
+      font-size: 28px;
+      font-weight: 700;
+    }
+
+    .page-subtitle {
+      margin: 0;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.7;
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: 1.1fr 1fr;
+      gap: 18px;
+      margin-top: 22px;
+    }
+
+    .panel {
+      background: linear-gradient(180deg, rgba(17, 23, 39, 0.98), rgba(12, 18, 30, 0.96));
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 20px;
+      box-shadow: var(--shadow);
+    }
+
+    .section-title {
+      margin: 0 0 8px;
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    .section-copy {
+      margin: 0 0 16px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.65;
+    }
+
+    .upload-drop {
+      border: 1px dashed rgba(139, 92, 246, 0.75);
+      border-radius: 14px;
+      padding: 18px;
+      background: linear-gradient(180deg, rgba(139, 92, 246, 0.12), rgba(34, 211, 238, 0.05));
+      transition: border-color 0.2s ease, transform 0.2s ease;
+    }
+
+    .upload-drop:hover {
+      border-color: rgba(34, 211, 238, 0.9);
+      transform: translateY(-1px);
+    }
+
+    .upload-drop p {
+      margin: 0 0 8px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .upload-meta {
+      margin-top: 12px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid rgba(255, 255, 255, 0.04);
+      color: var(--text);
+      font-size: 14px;
+      min-height: 46px;
+    }
+
+    .file-input {
+      display: block;
+      width: 100%;
+      padding: 12px 14px;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(255, 255, 255, 0.02);
+      color: var(--text);
+      font-size: 14px;
+    }
+
+    .audio-player {
+      width: 100%;
+      margin-top: 12px;
+      display: none;
+    }
+
+    .wave-canvas {
+      width: 100%;
+      height: 140px;
+      display: block;
+      border-radius: 12px;
+      background: linear-gradient(180deg, rgba(17, 23, 39, 0.96), rgba(13, 16, 28, 0.98));
+    }
+
+    .button-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .btn {
+      border: 0;
+      border-radius: 12px;
+      padding: 12px 16px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 0.15s ease, opacity 0.2s ease, background 0.2s ease;
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent), #6745ff);
+      color: white;
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--line);
+      color: var(--text);
+    }
+
+    .btn-ghost {
+      background: transparent;
+      border: 1px solid rgba(34, 211, 238, 0.35);
+      color: var(--text);
+    }
+
+    .state-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(255, 255, 255, 0.02);
+      font-size: 13px;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+
+    .status-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 999px;
+      background: var(--warning);
+      display: inline-block;
+    }
+
+    .status-dot.active {
+      background: var(--success);
+    }
+
+    .status-dot.busy {
+      background: var(--accent-2);
+      animation: pulse 1s ease-in-out infinite;
+    }
+
+    .timer {
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 24px;
+      margin-top: 8px;
+      color: var(--text);
+    }
+
+    .meter {
+      margin-top: 14px;
+      padding: 14px;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid rgba(255, 255, 255, 0.03);
+    }
+
+    .meter-title {
+      display: flex;
+      justify-content: space-between;
+      font-size: 14px;
+      margin-bottom: 8px;
+      color: var(--muted);
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+    }
+
+    .meter-description {
+      margin-top: 8px;
+      font-size: 13px;
+      color: var(--text);
+    }
+
+    .beat-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .beat-option {
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.02);
+      padding: 12px;
+      text-align: left;
+      color: var(--text);
+      cursor: pointer;
+    }
+
+    .beat-option.active {
+      border-color: rgba(34, 211, 238, 0.8);
+      background: rgba(34, 211, 238, 0.08);
+    }
+
+    .beat-option strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 14px;
+    }
+
+    .beat-option span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .preview-card {
+      margin-top: 14px;
+      padding: 14px;
+      border-radius: 14px;
+      background: linear-gradient(180deg, rgba(34, 211, 238, 0.08), rgba(139, 92, 246, 0.05));
+      border: 1px solid rgba(34, 211, 238, 0.14);
+    }
+
+    .preview-labels {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .preview-label {
+      padding: 12px;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    .preview-label small {
+      display: block;
+      color: var(--muted);
+      margin-bottom: 6px;
+      font-size: 12px;
+    }
+
+    .preview-value {
+      font-size: 15px;
+      font-weight: 700;
+    }
+
+    .wave-panel {
+      margin-top: 14px;
+      padding: 14px;
+      border-radius: 14px;
+      background: linear-gradient(180deg, rgba(17, 23, 39, 0.92), rgba(13, 16, 28, 0.95));
+      border: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    .wave-bars {
+      display: flex;
+      align-items: end;
+      gap: 8px;
+      height: 72px;
+      margin-top: 10px;
+    }
+
+    .wave-bars span {
+      flex: 1;
+      border-radius: 999px 999px 0 0;
+      background: linear-gradient(180deg, var(--accent-2), var(--accent));
+      opacity: 0.85;
+    }
+
+    .wave-bars span:nth-child(odd) {
+      height: 45%;
+    }
+
+    .wave-bars span:nth-child(even) {
+      height: 75%;
+    }
+
+    .wave-bars span:nth-child(3n) {
+      height: 60%;
+    }
+
+    .wave-bars span:nth-child(4n) {
+      height: 92%;
+    }
+
+    .footer-note {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.65;
+    }
+
+    .control-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .control-group {
+      flex: 1;
+      min-width: 180px;
+    }
+
+    .control-group small {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .control-select {
+      width: 100%;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(255, 255, 255, 0.02);
+      color: var(--text);
+      padding: 10px 12px;
+      font-size: 14px;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 0.5; }
+      50% { opacity: 1; }
+    }
+
+    @media (max-width: 900px) {
+      .workspace {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <h1 class="page-title">AI 音乐创作工具</h1>
+    <p class="page-subtitle">在一个页面里完成人声输入、浏览器录音、Auto-Tune 强度调节、Beat 生成与结果预览。</p>
+
+    <div class="workspace">
+      <section class="panel">
+        <div class="state-pill">
+          <span class="status-dot" id="globalDot"></span>
+          <span id="globalStatus">待开始</span>
+        </div>
+
+        <div class="upload-drop">
+          <h2 class="section-title">上传人声</h2>
+          <p class="section-copy">使用本地文件作为当前人声素材，界面仅做状态展示。</p>
+          <input class="file-input" id="audioInput" type="file" accept="audio/*">
+          <div class="upload-meta" id="uploadMeta">尚未选择音频文件。</div>
+          <audio id="audioPlayer" class="audio-player" controls preload="metadata"></audio>
+        </div>
+
+        <div style="margin-top: 18px;">
+          <h2 class="section-title">开始录音</h2>
+          <p class="section-copy">点击按钮开始或停止录音，停止后可播放刚录下来的声音。</p>
+          <div class="button-row">
+            <button class="btn btn-primary" id="recordBtn">开始录音</button>
+          </div>
+          <div class="timer" id="recordTimer">00:00</div>
+          <div class="preview-card" style="margin-top: 12px;">
+            <div class="meter-title">
+              <span id="recordPreviewLabel">待开始</span>
+              <span id="recordStatusBadge">待开始</span>
+            </div>
+            <audio id="recordAudioPlayer" class="audio-player" controls preload="metadata"></audio>
+            <p class="section-copy" id="recordHint" style="margin-top: 12px;">等待开始录音。</p>
+          </div>
+        </div>
+
+        <div style="margin-top: 18px;">
+          <h2 class="section-title">Auto-Tune 强度</h2>
+          <p class="section-copy">滑动参数时，结果预览会同步更新说明文字。</p>
+          <div class="meter">
+            <div class="meter-title">
+              <span>强度</span>
+              <span id="tuneValue">40%</span>
+            </div>
+            <input id="tuneSlider" type="range" min="0" max="100" value="40">
+            <div class="meter-description" id="tuneDescription">自然修正：保留人声质感。</div>
+          </div>
+        </div>
+
+        <div style="margin-top: 18px;">
+          <h2 class="section-title">生成 Beat</h2>
+          <p class="section-copy">先选择风格，再模拟生成节奏。</p>
+          <div class="beat-grid" id="beatOptions">
+            <button class="beat-option active" data-style="清爽电子">
+              <strong>清爽电子</strong>
+              <span>轻盈、适合流行人声</span>
+            </button>
+            <button class="beat-option" data-style="沉浸 Trap">
+              <strong>沉浸 Trap</strong>
+              <span>低频有力，适合压迫感</span>
+            </button>
+            <button class="beat-option" data-style="流行节奏">
+              <strong>流行节奏</strong>
+              <span>稳定、适合主旋律</span>
+            </button>
+            <button class="beat-option" data-style="未来 R&B">
+              <strong>未来 R&B</strong>
+              <span>柔和、适合情绪表达</span>
+            </button>
+          </div>
+          <div class="button-row">
+            <button class="btn btn-primary" id="generateBtn">生成 Beat</button>
+          </div>
+          <div class="preview-card">
+            <div class="meter-title">
+              <span id="beatStatusLabel">等待生成</span>
+              <span id="beatStyleLabel">清爽电子</span>
+            </div>
+            <p class="section-copy" id="beatStatusText">选择风格后点击生成，1 秒后进入预览状态。</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2 class="section-title">结果预览</h2>
+        <p class="section-copy">预览区会实时同步上传、录音、Auto-Tune 和 Beat 信息。</p>
+
+        <div class="wave-panel">
+          <div class="meter-title">
+            <span>真实音频波形</span>
+            <span id="previewWaveLabel">待生成</span>
+          </div>
+          <canvas id="waveCanvas" class="wave-canvas" width="560" height="140" aria-label="音频波形可视化"></canvas>
+          <p class="section-copy" id="waveStatus" style="margin-top: 12px; margin-bottom: 0;">等待上传或录音后绘制波形。</p>
+        </div>
+
+        <div class="preview-labels">
+          <div class="preview-label">
+            <small>上传状态</small>
+            <div class="preview-value" id="previewUpload">未上传</div>
+          </div>
+          <div class="preview-label">
+            <small>录音状态</small>
+            <div class="preview-value" id="previewRecord">待开始</div>
+          </div>
+          <div class="preview-label">
+            <small>Auto-Tune 强度</small>
+            <div class="preview-value" id="previewTune">40%</div>
+          </div>
+          <div class="preview-label">
+            <small>Beat 风格</small>
+            <div class="preview-value" id="previewBeat">清爽电子</div>
+          </div>
+        </div>
+
+        <div class="preview-card">
+          <div class="meter-title">
+            <span>当前结果</span>
+            <span id="previewResultBadge">未完成</span>
+          </div>
+          <p class="section-copy" id="previewSummary">等待用户完成上传、录音和生成流程。</p>
+        </div>
+
+        <div class="preview-card">
+          <div class="meter-title">
+            <span>基础音频分析</span>
+            <span id="analysisState">等待分析</span>
+          </div>
+          <div style="display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px;">
+            <div class="preview-label">
+              <small>时长</small>
+              <div class="preview-value" id="analysisDuration">--</div>
+            </div>
+            <div class="preview-label">
+              <small>峰值</small>
+              <div class="preview-value" id="analysisPeak">--</div>
+            </div>
+            <div class="preview-label">
+              <small>平均音量</small>
+              <div class="preview-value" id="analysisAverage">--</div>
+            </div>
+            <div class="preview-label">
+              <small>提示</small>
+              <div class="preview-value" id="analysisHintText">等待音频</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="preview-card">
+          <div class="meter-title">
+            <span>基础音高检测</span>
+            <span id="pitchState">等待分析</span>
+          </div>
+          <div style="display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 12px;">
+            <div class="preview-label">
+              <small>主要频率</small>
+              <div class="preview-value" id="pitchFrequency">--</div>
+            </div>
+            <div class="preview-label">
+              <small>音名</small>
+              <div class="preview-value" id="pitchNote">--</div>
+            </div>
+            <div class="preview-label">
+              <small>可信度</small>
+              <div class="preview-value" id="pitchConfidence">--</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="preview-card">
+          <div class="meter-title">
+            <span>音准偏差分析</span>
+            <span id="tuningState">等待分析</span>
+          </div>
+          <div class="control-row">
+            <label class="control-group">
+              <small>调性</small>
+              <select id="keySelect" class="control-select">
+                <option value="C">C</option>
+                <option value="D">D</option>
+                <option value="E">E</option>
+                <option value="F">F</option>
+                <option value="G">G</option>
+                <option value="A">A</option>
+                <option value="B">B</option>
+              </select>
+            </label>
+            <label class="control-group">
+              <small>音阶</small>
+              <select id="modeSelect" class="control-select">
+                <option value="major">大调</option>
+                <option value="minor">小调</option>
+              </select>
+            </label>
+          </div>
+          <div style="display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 12px;">
+            <div class="preview-label">
+              <small>当前检测音名</small>
+              <div class="preview-value" id="tuningCurrentNote">暂无音准分析</div>
+            </div>
+            <div class="preview-label">
+              <small>目标修正音名</small>
+              <div class="preview-value" id="tuningTargetNote">暂无音准分析</div>
+            </div>
+            <div class="preview-label">
+              <small>偏差 cents</small>
+              <div class="preview-value" id="tuningDeviation">--</div>
+            </div>
+            <div class="preview-label">
+              <small>音准建议</small>
+              <div class="preview-value" id="tuningSuggestion">暂无音准分析</div>
+            </div>
+          </div>
+          <p class="footer-note" id="scaleHint" style="margin-bottom:0;">目标音阶：C · D · E · F · G · A · B</p>
+        </div>
+
+        <div class="preview-card">
+          <div class="meter-title">
+            <span>模拟修正路径</span>
+            <span id="tuningSimulationState">等待分析</span>
+          </div>
+          <div style="display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 12px;">
+            <div class="preview-label">
+              <small>原始偏差</small>
+              <div class="preview-value" id="tuningSimulationOriginal">暂无模拟修正</div>
+            </div>
+            <div class="preview-label">
+              <small>修正强度</small>
+              <div class="preview-value" id="tuningSimulationStrength">40%</div>
+            </div>
+            <div class="preview-label">
+              <small>修正后偏差</small>
+              <div class="preview-value" id="tuningSimulationCorrected">暂无模拟修正</div>
+            </div>
+            <div class="preview-label">
+              <small>修正方向</small>
+              <div class="preview-value" id="tuningSimulationDirection">暂无模拟修正</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="preview-card">
+          <div class="meter-title">
+            <span>Beat 推荐方案</span>
+            <span id="beatRecommendationState">等待分析</span>
+          </div>
+          <div style="display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 12px;">
+            <div class="preview-label">
+              <small>推荐风格</small>
+              <div class="preview-value" id="beatRecommendationStyle">暂无 Beat 推荐</div>
+            </div>
+            <div class="preview-label">
+              <small>推荐 BPM</small>
+              <div class="preview-value" id="beatRecommendationBpm">--</div>
+            </div>
+            <div class="preview-label">
+              <small>推荐和弦方向</small>
+              <div class="preview-value" id="beatRecommendationChords">--</div>
+            </div>
+            <div class="preview-label">
+              <small>推荐理由</small>
+              <div class="preview-value" id="beatRecommendationReason">暂无 Beat 推荐</div>
+            </div>
+          </div>
+        </div>
+
+        <p class="footer-note">当前版本不连接后端、不调用真实 AI、不做真实修音；录音为浏览器本地录音。</p>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    const audioInput = document.getElementById('audioInput');
+    const uploadMeta = document.getElementById('uploadMeta');
+    const audioPlayer = document.getElementById('audioPlayer');
+    const recordBtn = document.getElementById('recordBtn');
+    const recordTimer = document.getElementById('recordTimer');
+    const tuneSlider = document.getElementById('tuneSlider');
+    const tuneValue = document.getElementById('tuneValue');
+    const tuneDescription = document.getElementById('tuneDescription');
+    const generateBtn = document.getElementById('generateBtn');
+    const beatOptions = document.querySelectorAll('.beat-option');
+    const beatStatusLabel = document.getElementById('beatStatusLabel');
+    const beatStatusText = document.getElementById('beatStatusText');
+    const beatStyleLabel = document.getElementById('beatStyleLabel');
+    const globalDot = document.getElementById('globalDot');
+    const globalStatus = document.getElementById('globalStatus');
+
+    const previewUpload = document.getElementById('previewUpload');
+    const previewRecord = document.getElementById('previewRecord');
+    const previewTune = document.getElementById('previewTune');
+    const previewBeat = document.getElementById('previewBeat');
+    const previewResultBadge = document.getElementById('previewResultBadge');
+    const previewSummary = document.getElementById('previewSummary');
+    const previewWaveLabel = document.getElementById('previewWaveLabel');
+    const waveCanvas = document.getElementById('waveCanvas');
+    const waveStatus = document.getElementById('waveStatus');
+    const analysisDuration = document.getElementById('analysisDuration');
+    const analysisPeak = document.getElementById('analysisPeak');
+    const analysisAverage = document.getElementById('analysisAverage');
+    const analysisHintText = document.getElementById('analysisHintText');
+    const analysisState = document.getElementById('analysisState');
+    const pitchFrequency = document.getElementById('pitchFrequency');
+    const pitchNote = document.getElementById('pitchNote');
+    const pitchConfidence = document.getElementById('pitchConfidence');
+    const pitchState = document.getElementById('pitchState');
+    const keySelect = document.getElementById('keySelect');
+    const modeSelect = document.getElementById('modeSelect');
+    const tuningState = document.getElementById('tuningState');
+    const tuningCurrentNote = document.getElementById('tuningCurrentNote');
+    const tuningTargetNote = document.getElementById('tuningTargetNote');
+    const tuningDeviation = document.getElementById('tuningDeviation');
+    const tuningSuggestion = document.getElementById('tuningSuggestion');
+    const scaleHint = document.getElementById('scaleHint');
+    const tuningSimulationState = document.getElementById('tuningSimulationState');
+    const tuningSimulationOriginal = document.getElementById('tuningSimulationOriginal');
+    const tuningSimulationStrength = document.getElementById('tuningSimulationStrength');
+    const tuningSimulationCorrected = document.getElementById('tuningSimulationCorrected');
+    const tuningSimulationDirection = document.getElementById('tuningSimulationDirection');
+    const beatRecommendationState = document.getElementById('beatRecommendationState');
+    const beatRecommendationStyle = document.getElementById('beatRecommendationStyle');
+    const beatRecommendationBpm = document.getElementById('beatRecommendationBpm');
+    const beatRecommendationChords = document.getElementById('beatRecommendationChords');
+    const beatRecommendationReason = document.getElementById('beatRecommendationReason');
+
+    const recordAudioPlayer = document.getElementById('recordAudioPlayer');
+    const recordPreviewLabel = document.getElementById('recordPreviewLabel');
+    const recordStatusBadge = document.getElementById('recordStatusBadge');
+    const recordHint = document.getElementById('recordHint');
+
+    let selectedBeat = '清爽电子';
+    let recording = false;
+    let recordSeconds = 0;
+    let recordTimerId = null;
+    let currentObjectUrl = null;
+    let currentRecordUrl = null;
+    let mediaRecorder = null;
+    let mediaStream = null;
+    let recordingChunks = [];
+    let audioContext = null;
+    let lastPitchResult = null;
+
+    function releaseUploadUrl() {
+      if (currentObjectUrl) {
+        URL.revokeObjectURL(currentObjectUrl);
+        currentObjectUrl = null;
+      }
+    }
+
+    function releaseRecordUrl() {
+      if (currentRecordUrl) {
+        URL.revokeObjectURL(currentRecordUrl);
+        currentRecordUrl = null;
+      }
+    }
+
+    function ensureAudioContext() {
+      if (!audioContext) {
+        const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContextCtor) {
+          throw new Error('浏览器不支持 AudioContext');
+        }
+        audioContext = new AudioContextCtor();
+      }
+      return audioContext;
+    }
+
+    function clearWaveform() {
+      const ctx = waveCanvas.getContext('2d');
+      ctx.clearRect(0, 0, waveCanvas.width, waveCanvas.height);
+      ctx.fillStyle = 'rgba(17, 23, 39, 0.96)';
+      ctx.fillRect(0, 0, waveCanvas.width, waveCanvas.height);
+      ctx.strokeStyle = 'rgba(34, 211, 238, 0.35)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, waveCanvas.height / 2);
+      ctx.lineTo(waveCanvas.width, waveCanvas.height / 2);
+      ctx.stroke();
+    }
+
+    function drawWaveform(samples) {
+      const ctx = waveCanvas.getContext('2d');
+      const width = waveCanvas.width;
+      const height = waveCanvas.height;
+      const total = samples.length;
+
+      clearWaveform();
+
+      ctx.beginPath();
+      ctx.strokeStyle = '#22d3ee';
+      ctx.lineWidth = 1.5;
+
+      const step = Math.max(1, Math.floor(total / width));
+      for (let x = 0; x < width; x += 1) {
+        let sum = 0;
+        let start = x * step;
+        let end = Math.min(total, start + step);
+        for (let i = start; i < end; i += 1) {
+          sum += Math.abs(samples[i]);
+        }
+        const avg = end > start ? sum / (end - start) : 0;
+        const y = height / 2 - avg * height * 0.85;
+        if (x === 0) {
+          ctx.moveTo(x, y);
+        } else {
+          ctx.lineTo(x, y);
+        }
+      }
+      ctx.stroke();
+    }
+
+    async function decodeAudioBuffer(arrayBuffer) {
+      const context = ensureAudioContext();
+      if (context.state === 'suspended') {
+        await context.resume();
+      }
+      return context.decodeAudioData(arrayBuffer.slice(0));
+    }
+
+    function formatDuration(seconds) {
+      if (!Number.isFinite(seconds)) {
+        return '--';
+      }
+      const mins = Math.floor(seconds / 60);
+      const secs = Math.floor(seconds % 60);
+      return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    }
+
+    function formatLevel(value) {
+      if (!Number.isFinite(value)) {
+        return '--';
+      }
+      return `${Math.round(value * 100)}%`;
+    }
+
+    function updateAnalysis(audioBuffer) {
+      const channelData = audioBuffer.getChannelData(0);
+      let peak = 0;
+      let sum = 0;
+
+      // 这里用绝对值来估算峰值与平均音量，便于新手理解。
+      for (let i = 0; i < channelData.length; i += 1) {
+        const current = Math.abs(channelData[i]);
+        if (current > peak) {
+          peak = current;
+        }
+        sum += current;
+      }
+
+      const average = channelData.length ? sum / channelData.length : 0;
+      analysisDuration.textContent = formatDuration(audioBuffer.duration);
+      analysisPeak.textContent = formatLevel(peak);
+      analysisAverage.textContent = formatLevel(average);
+      analysisState.textContent = '已分析';
+
+      if (peak >= 0.9) {
+        analysisHintText.textContent = '峰值较高，可能接近爆音。';
+      } else if (average < 0.03) {
+        analysisHintText.textContent = '平均音量偏低，建议提高音量。';
+      } else {
+        analysisHintText.textContent = '音量正常，可继续预览。';
+      }
+    }
+
+    function resetPitchDisplay() {
+      lastPitchResult = null;
+      pitchFrequency.textContent = '--';
+      pitchNote.textContent = '--';
+      pitchConfidence.textContent = '--';
+      pitchState.textContent = '等待分析';
+      tuningState.textContent = '暂无音准分析';
+      tuningCurrentNote.textContent = '暂无音准分析';
+      tuningTargetNote.textContent = '暂无音准分析';
+      tuningDeviation.textContent = '--';
+      tuningSuggestion.textContent = '暂无音准分析';
+      tuningSimulationState.textContent = '等待分析';
+      tuningSimulationOriginal.textContent = '暂无模拟修正';
+      tuningSimulationStrength.textContent = `${Number(tuneSlider.value)}%`;
+      tuningSimulationCorrected.textContent = '暂无模拟修正';
+      tuningSimulationDirection.textContent = '暂无模拟修正';
+      beatRecommendationState.textContent = '暂无 Beat 推荐';
+      beatRecommendationStyle.textContent = '暂无 Beat 推荐';
+      beatRecommendationBpm.textContent = '--';
+      beatRecommendationChords.textContent = '--';
+      beatRecommendationReason.textContent = '暂无 Beat 推荐';
+    }
+
+    const noteNames = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+
+    function midiToNoteName(midiNumber) {
+      const note = noteNames[midiNumber % 12];
+      const octave = Math.floor(midiNumber / 12) - 1;
+      return `${note}${octave}`;
+    }
+
+    function noteNameToMidi(noteName) {
+      const normalized = noteName.replace(/\s+/g, '');
+      const index = noteNames.indexOf(normalized);
+      if (index === -1) {
+        return null;
+      }
+      return index;
+    }
+
+    function midiToFrequency(midiNumber) {
+      return 440 * Math.pow(2, (midiNumber - 69) / 12);
+    }
+
+    function getScaleOffsets(mode) {
+      if (mode === 'minor') {
+        return [0, 2, 3, 5, 7, 8, 10];
+      }
+      return [0, 2, 4, 5, 7, 9, 11];
+    }
+
+    function buildScaleHint(rootNote, mode) {
+      const rootMidi = noteNameToMidi(rootNote);
+      if (rootMidi === null) {
+        return '目标音阶：C · D · E · F · G · A · B';
+      }
+
+      const offsets = getScaleOffsets(mode);
+      const notes = offsets.map((offset) => midiToNoteName(rootMidi + offset));
+      return `目标音阶：${notes.join(' · ')}`;
+    }
+
+    function getNearestScaleMidi(detectedMidi, rootNote, mode) {
+      const rootMidi = noteNameToMidi(rootNote);
+      if (rootMidi === null) {
+        return null;
+      }
+
+      const offsets = getScaleOffsets(mode);
+      let bestMidi = null;
+      let bestDistance = Infinity;
+
+      // 在附近的几个八度里寻找最接近的目标音。
+      for (let octave = -2; octave <= 2; octave += 1) {
+        for (const offset of offsets) {
+          const candidateMidi = rootMidi + offset + octave * 12;
+          const distance = Math.abs(candidateMidi - detectedMidi);
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            bestMidi = candidateMidi;
+          }
+        }
+      }
+
+      return bestMidi;
+    }
+
+    function updateTuningAnalysis() {
+      if (!lastPitchResult) {
+        tuningState.textContent = '等待分析';
+        tuningCurrentNote.textContent = '暂无音准分析';
+        tuningTargetNote.textContent = '暂无音准分析';
+        tuningDeviation.textContent = '--';
+        tuningSuggestion.textContent = '暂无音准分析';
+        scaleHint.textContent = buildScaleHint(keySelect.value, modeSelect.value);
+        updateAutoTuneSimulation();
+        return;
+      }
+
+      const detectedMidi = Math.round(69 + 12 * Math.log2(lastPitchResult.frequency / 440));
+      const targetMidi = getNearestScaleMidi(detectedMidi, keySelect.value, modeSelect.value);
+      const targetFrequency = midiToFrequency(targetMidi);
+      const deviation = 1200 * Math.log2(lastPitchResult.frequency / targetFrequency);
+
+      tuningState.textContent = '已分析';
+      tuningCurrentNote.textContent = lastPitchResult.note;
+      tuningTargetNote.textContent = midiToNoteName(targetMidi);
+      tuningDeviation.textContent = `${deviation.toFixed(1)} cents`;
+      tuningSuggestion.textContent = Math.abs(deviation) <= 15 ? '基本准确' : deviation < 0 ? '偏低' : '偏高';
+      scaleHint.textContent = buildScaleHint(keySelect.value, modeSelect.value);
+      updateAutoTuneSimulation();
+    }
+
+    function updateAutoTuneSimulation() {
+      const strength = Number(tuneSlider.value);
+      tuningSimulationStrength.textContent = `${strength}%`;
+
+      if (!lastPitchResult) {
+        tuningSimulationState.textContent = '等待分析';
+        tuningSimulationOriginal.textContent = '暂无模拟修正';
+        tuningSimulationCorrected.textContent = '暂无模拟修正';
+        tuningSimulationDirection.textContent = '暂无模拟修正';
+        updateBeatRecommendation();
+        return;
+      }
+
+      const detectedMidi = Math.round(69 + 12 * Math.log2(lastPitchResult.frequency / 440));
+      const targetMidi = getNearestScaleMidi(detectedMidi, keySelect.value, modeSelect.value);
+      if (targetMidi === null) {
+        tuningSimulationState.textContent = '等待分析';
+        tuningSimulationOriginal.textContent = '暂无模拟修正';
+        tuningSimulationCorrected.textContent = '暂无模拟修正';
+        tuningSimulationDirection.textContent = '暂无模拟修正';
+        updateBeatRecommendation();
+        return;
+      }
+
+      const targetFrequency = midiToFrequency(targetMidi);
+      const rawDeviation = 1200 * Math.log2(lastPitchResult.frequency / targetFrequency);
+      const correctedDeviation = rawDeviation * (1 - strength / 100);
+
+      tuningSimulationState.textContent = '已模拟';
+      tuningSimulationOriginal.textContent = `${rawDeviation.toFixed(1)} cents`;
+      tuningSimulationCorrected.textContent = `${correctedDeviation.toFixed(1)} cents`;
+      tuningSimulationDirection.textContent = Math.abs(correctedDeviation) <= 15 ? '基本不动' : rawDeviation < 0 ? '向上拉' : '向下拉';
+      updateBeatRecommendation();
+    }
+
+    function updateBeatRecommendation() {
+      if (!lastPitchResult) {
+        beatRecommendationState.textContent = '暂无 Beat 推荐';
+        beatRecommendationStyle.textContent = '暂无 Beat 推荐';
+        beatRecommendationBpm.textContent = '--';
+        beatRecommendationChords.textContent = '--';
+        beatRecommendationReason.textContent = '暂无 Beat 推荐';
+        return;
+      }
+
+      const detectedMidi = Math.round(69 + 12 * Math.log2(lastPitchResult.frequency / 440));
+      const strength = Number(tuneSlider.value);
+      const targetMidi = getNearestScaleMidi(detectedMidi, keySelect.value, modeSelect.value);
+      if (targetMidi === null) {
+        beatRecommendationState.textContent = '暂无 Beat 推荐';
+        beatRecommendationStyle.textContent = '暂无 Beat 推荐';
+        beatRecommendationBpm.textContent = '--';
+        beatRecommendationChords.textContent = '--';
+        beatRecommendationReason.textContent = '暂无 Beat 推荐';
+        return;
+      }
+
+      const targetFrequency = midiToFrequency(targetMidi);
+      const deviation = 1200 * Math.log2(lastPitchResult.frequency / targetFrequency);
+
+      // 规则优先级：先匹配更明确的场景，再回退到通用方案。
+      if (strength > 70) {
+        beatRecommendationState.textContent = '规则推荐';
+        beatRecommendationStyle.textContent = '电子流行';
+        beatRecommendationBpm.textContent = '100-120';
+        beatRecommendationChords.textContent = 'I - V - vi - IV';
+        beatRecommendationReason.textContent = 'Auto-Tune 强度较高，推荐更稳定、偏电子的节奏走向。';
+        return;
+      }
+
+      if (modeSelect.value === 'minor' && detectedMidi <= 60) {
+        beatRecommendationState.textContent = '规则推荐';
+        beatRecommendationStyle.textContent = '沉浸 Trap';
+        beatRecommendationBpm.textContent = '72-88';
+        beatRecommendationChords.textContent = 'i - VI - III - VII';
+        beatRecommendationReason.textContent = '小调 + 低音区更适合沉稳、带有压迫感的 Trap 结构。';
+        return;
+      }
+
+      if (modeSelect.value === 'minor' && deviation < 0) {
+        beatRecommendationState.textContent = '规则推荐';
+        beatRecommendationStyle.textContent = '情绪 R&B';
+        beatRecommendationBpm.textContent = '78-92';
+        beatRecommendationChords.textContent = 'i - iv - VI - V';
+        beatRecommendationReason.textContent = '小调且偏低时，适合更细腻、情绪化的 R&B 节奏。';
+        return;
+      }
+
+      if (modeSelect.value === 'major' && Math.abs(deviation) <= 15) {
+        beatRecommendationState.textContent = '规则推荐';
+        beatRecommendationStyle.textContent = '流行节奏';
+        beatRecommendationBpm.textContent = '92-112';
+        beatRecommendationChords.textContent = 'I - V - vi - IV';
+        beatRecommendationReason.textContent = '大调且音准基本准确时，适合自然、稳定的流行节奏。';
+        return;
+      }
+
+      if (modeSelect.value === 'major' && detectedMidi >= 69) {
+        beatRecommendationState.textContent = '规则推荐';
+        beatRecommendationStyle.textContent = '清爽电子';
+        beatRecommendationBpm.textContent = '110-124';
+        beatRecommendationChords.textContent = 'I - vi - IV - V';
+        beatRecommendationReason.textContent = '大调且高音区更适合轻盈、清爽的电子节奏。';
+        return;
+      }
+
+      beatRecommendationState.textContent = '规则推荐';
+      beatRecommendationStyle.textContent = '自然平衡节奏';
+      beatRecommendationBpm.textContent = '86-104';
+      beatRecommendationChords.textContent = 'I - vi - IV - V';
+      beatRecommendationReason.textContent = '当前条件不满足特殊规则时，推荐一套更平衡的自然节奏方案。';
+    }
+
+    function estimatePitchFromBuffer(audioBuffer) {
+      const sampleRate = audioBuffer.sampleRate;
+      const channelData = audioBuffer.getChannelData(0);
+
+      if (!channelData.length || channelData.length < sampleRate * 0.25) {
+        return null;
+      }
+
+      const start = Math.floor(channelData.length * 0.2);
+      const end = Math.floor(channelData.length * 0.8);
+      const usableLength = Math.max(1, end - start);
+      const segmentLength = Math.min(usableLength, Math.floor(sampleRate * 1.2));
+
+      if (segmentLength < sampleRate * 0.3) {
+        return null;
+      }
+
+      const segment = channelData.slice(start, start + segmentLength);
+      const frameSize = Math.min(segment.length, Math.floor(sampleRate * 0.35));
+      const frameStep = Math.max(1, Math.floor(frameSize / 2));
+      const minLag = Math.floor(sampleRate / 500);
+      const maxLag = Math.floor(sampleRate / 70);
+
+      if (minLag <= 0 || maxLag <= minLag) {
+        return null;
+      }
+
+      const candidates = [];
+      const correlations = [];
+
+      for (let offset = 0; offset + frameSize <= segment.length; offset += frameStep) {
+        const frame = segment.slice(offset, offset + frameSize);
+        let bestLag = 0;
+        let bestCorrelation = 0;
+
+        // 用自相关找出最稳定的周期，便于新手理解。
+        for (let lag = minLag; lag <= maxLag; lag += 1) {
+          let corr = 0;
+          let energy1 = 0;
+          let energy2 = 0;
+
+          for (let i = 0; i < frame.length - lag; i += 1) {
+            const left = frame[i];
+            const right = frame[i + lag];
+            corr += left * right;
+            energy1 += left * left;
+            energy2 += right * right;
+          }
+
+          const normalized = corr / (Math.sqrt(energy1 * energy2) + 1e-9);
+          if (normalized > bestCorrelation) {
+            bestCorrelation = normalized;
+            bestLag = lag;
+          }
+        }
+
+        if (bestLag > 0 && bestCorrelation > 0.2) {
+          const frequency = sampleRate / bestLag;
+          if (frequency >= 70 && frequency <= 700) {
+            candidates.push(frequency);
+            correlations.push(bestCorrelation);
+          }
+        }
+      }
+
+      if (!candidates.length) {
+        return null;
+      }
+
+      const averageFrequency = candidates.reduce((sum, item) => sum + item, 0) / candidates.length;
+      const averageCorrelation = correlations.reduce((sum, item) => sum + item, 0) / correlations.length;
+
+      const deviation = candidates.reduce((sum, item) => sum + Math.abs(item - averageFrequency), 0) / candidates.length;
+      const stability = deviation / averageFrequency;
+
+      if (averageCorrelation < 0.28 || stability > 0.14) {
+        return null;
+      }
+
+      const midiNumber = 69 + 12 * Math.log2(averageFrequency / 440);
+      const roundedMidi = Math.round(midiNumber);
+      const confidence = averageCorrelation > 0.55 && stability < 0.06 ? '高' : averageCorrelation > 0.38 ? '中' : '低';
+
+      return {
+        frequency: averageFrequency,
+        note: midiToNoteName(roundedMidi),
+        confidence,
+      };
+    }
+
+    function updatePitchDisplay(pitchResult) {
+      if (!pitchResult) {
+        pitchFrequency.textContent = '未检测到稳定音高';
+        pitchNote.textContent = '未检测到稳定音高';
+        pitchConfidence.textContent = '低';
+        pitchState.textContent = '未检测到稳定音高';
+        return;
+      }
+
+      pitchFrequency.textContent = `${Math.round(pitchResult.frequency)} Hz`;
+      pitchNote.textContent = pitchResult.note;
+      pitchConfidence.textContent = pitchResult.confidence;
+      pitchState.textContent = '已检测';
+    }
+
+    async function renderWaveformFromArrayBuffer(arrayBuffer, sourceLabel) {
+      try {
+        waveStatus.textContent = `${sourceLabel} 波形生成中…`;
+        const audioBuffer = await decodeAudioBuffer(arrayBuffer);
+        const channelData = audioBuffer.getChannelData(0);
+        drawWaveform(channelData);
+        updateAnalysis(audioBuffer);
+        lastPitchResult = estimatePitchFromBuffer(audioBuffer);
+        updatePitchDisplay(lastPitchResult);
+        updateTuningAnalysis();
+        waveStatus.textContent = `${sourceLabel} 波形已生成。`;
+        previewWaveLabel.textContent = '已绘制';
+      } catch (error) {
+        clearWaveform();
+        analysisDuration.textContent = '--';
+        analysisPeak.textContent = '--';
+        analysisAverage.textContent = '--';
+        analysisHintText.textContent = '等待音频';
+        analysisState.textContent = '等待分析';
+        resetPitchDisplay();
+        waveStatus.textContent = '音频解码失败，请重新选择文件或再试一次。';
+        previewWaveLabel.textContent = '解码失败';
+      }
+    }
+
+    keySelect.addEventListener('change', () => {
+      updateTuningAnalysis();
+    });
+
+    modeSelect.addEventListener('change', () => {
+      updateTuningAnalysis();
+    });
+
+    function setRecordUi(status) {
+      recordStatusBadge.textContent = status;
+      recordPreviewLabel.textContent = status;
+      previewRecord.textContent = status;
+      previewWaveLabel.textContent = status;
+
+      if (status === '录音中') {
+        globalDot.classList.remove('warning');
+        globalDot.classList.add('active');
+        globalDot.classList.add('busy');
+        globalStatus.textContent = '录音中';
+      } else if (status === '已完成') {
+        globalDot.classList.remove('busy');
+        globalDot.classList.add('active');
+        globalStatus.textContent = '已完成';
+      } else {
+        globalDot.classList.remove('busy');
+        globalDot.classList.remove('active');
+        globalStatus.textContent = '待开始';
+      }
+    }
+
+    // 上传文件只做本地显示，不做真实上传。
+    audioInput.addEventListener('change', async (event) => {
+      const file = event.target.files[0];
+
+      releaseUploadUrl();
+
+      if (!file) {
+        uploadMeta.textContent = '尚未选择音频文件。';
+        previewUpload.textContent = '未上传';
+        audioPlayer.removeAttribute('src');
+        audioPlayer.style.display = 'none';
+        previewWaveLabel.textContent = '待生成';
+        currentObjectUrl = null;
+        clearWaveform();
+        analysisDuration.textContent = '--';
+        analysisPeak.textContent = '--';
+        analysisAverage.textContent = '--';
+        analysisHintText.textContent = '等待音频';
+        analysisState.textContent = '等待分析';
+        resetPitchDisplay();
+        waveStatus.textContent = '等待上传或录音后绘制波形。';
+        updatePreviewSummary();
+        return;
+      }
+
+      if (!file.type.startsWith('audio/')) {
+        uploadMeta.textContent = '请选择有效的音频文件。';
+        previewUpload.textContent = '未上传';
+        audioPlayer.removeAttribute('src');
+        audioPlayer.style.display = 'none';
+        clearWaveform();
+        analysisDuration.textContent = '--';
+        analysisPeak.textContent = '--';
+        analysisAverage.textContent = '--';
+        analysisHintText.textContent = '等待音频';
+        analysisState.textContent = '等待分析';
+        resetPitchDisplay();
+        waveStatus.textContent = '请选择有效的音频文件。';
+        return;
+      }
+
+      currentObjectUrl = URL.createObjectURL(file);
+      audioPlayer.src = currentObjectUrl;
+      audioPlayer.style.display = 'block';
+      audioPlayer.load();
+      uploadMeta.textContent = `已选择：${file.name}（${Math.max(1, Math.round(file.size / 1024))} KB）`;
+      previewUpload.textContent = file.name;
+      previewWaveLabel.textContent = '已上传';
+      try {
+        await renderWaveformFromArrayBuffer(await file.arrayBuffer(), '上传音频');
+      } catch (error) {
+        waveStatus.textContent = '音频解码失败，请重新选择文件或再试一次。';
+      }
+      updatePreviewSummary();
+    });
+
+    async function startRecording() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        recordHint.textContent = '当前浏览器不支持录音功能。';
+        setRecordUi('待开始');
+        return;
+      }
+
+      try {
+        releaseRecordUrl();
+        recordAudioPlayer.removeAttribute('src');
+        recordAudioPlayer.style.display = 'none';
+        recordHint.textContent = '正在请求麦克风权限…';
+        recordBtn.textContent = '录音中';
+        recordBtn.classList.replace('btn-primary', 'btn-ghost');
+
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaStream = stream;
+        recordingChunks = [];
+        mediaRecorder = new MediaRecorder(stream);
+
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data && event.data.size > 0) {
+            recordingChunks.push(event.data);
+          }
+        };
+
+        mediaRecorder.onstop = async () => {
+          const blob = new Blob(recordingChunks, { type: 'audio/webm' });
+          releaseRecordUrl();
+          currentRecordUrl = URL.createObjectURL(blob);
+          recordAudioPlayer.src = currentRecordUrl;
+          recordAudioPlayer.style.display = 'block';
+          recordAudioPlayer.load();
+          recordHint.textContent = '录音已完成，正在解码波形…';
+          setRecordUi('已完成');
+
+          try {
+            await renderWaveformFromArrayBuffer(await blob.arrayBuffer(), '录音');
+            recordHint.textContent = '录音已完成，可播放刚录下来的声音。';
+          } catch (error) {
+            recordHint.textContent = '录音已完成，但波形解码失败，请再试一次。';
+          }
+
+          if (mediaStream) {
+            mediaStream.getTracks().forEach((track) => track.stop());
+            mediaStream = null;
+          }
+
+          updatePreviewSummary();
+        };
+
+        recordSeconds = 0;
+        recordTimer.textContent = '00:00';
+        recordTimerId = setInterval(() => {
+          recordSeconds += 1;
+          const mm = String(Math.floor(recordSeconds / 60)).padStart(2, '0');
+          const ss = String(recordSeconds % 60).padStart(2, '0');
+          recordTimer.textContent = `${mm}:${ss}`;
+        }, 1000);
+
+        recordHint.textContent = '麦克风已连接，开始录音…';
+        setRecordUi('录音中');
+        mediaRecorder.start();
+        recording = true;
+      } catch (error) {
+        let message = '无法访问麦克风，请检查权限设置。';
+        if (error && error.name === 'NotAllowedError') {
+          message = '已拒绝麦克风权限，请允许后再试。';
+        } else if (error && error.name === 'NotSupportedError') {
+          message = '当前浏览器不支持录音功能。';
+        }
+
+        recordHint.textContent = message;
+        recordBtn.textContent = '开始录音';
+        recordBtn.classList.remove('btn-ghost');
+        recordBtn.classList.add('btn-primary');
+        setRecordUi('待开始');
+
+        if (recordTimerId) {
+          clearInterval(recordTimerId);
+          recordTimerId = null;
+        }
+      }
+    }
+
+    function stopRecording() {
+      if (!mediaRecorder || mediaRecorder.state === 'inactive') {
+        return;
+      }
+
+      mediaRecorder.stop();
+      recording = false;
+
+      if (recordTimerId) {
+        clearInterval(recordTimerId);
+        recordTimerId = null;
+      }
+
+      recordBtn.textContent = '开始录音';
+      recordBtn.classList.remove('btn-ghost');
+      recordBtn.classList.add('btn-primary');
+      recordHint.textContent = '录音已停止，正在生成播放器…';
+    }
+
+    recordBtn.addEventListener('click', () => {
+      if (!recording) {
+        startRecording();
+      } else {
+        stopRecording();
+      }
+    });
+
+    // 滑块驱动强度说明，结果预览同步刷新。
+    tuneSlider.addEventListener('input', () => {
+      const value = Number(tuneSlider.value);
+      tuneValue.textContent = `${value}%`;
+      previewTune.textContent = `${value}%`;
+
+      if (value <= 30) {
+        tuneDescription.textContent = '自然修正：保留人声质感。';
+      } else if (value <= 70) {
+        tuneDescription.textContent = '中性修正：兼顾稳定性与自然度。';
+      } else {
+        tuneDescription.textContent = '强烈修正：更显聚焦、适合高亮效果。';
+      }
+
+      updateAutoTuneSimulation();
+      updatePreviewSummary();
+    });
+
+    // Beat 风格选择与模拟生成耗时。
+    beatOptions.forEach((option) => {
+      option.addEventListener('click', () => {
+        beatOptions.forEach((item) => item.classList.remove('active'));
+        option.classList.add('active');
+        selectedBeat = option.dataset.style;
+        beatStyleLabel.textContent = selectedBeat;
+        previewBeat.textContent = selectedBeat;
+        beatStatusLabel.textContent = '等待生成';
+        beatStatusText.textContent = '选择风格后点击生成，1 秒后进入预览状态。';
+        updatePreviewSummary();
+      });
+    });
+
+    generateBtn.addEventListener('click', () => {
+      beatStatusLabel.textContent = '生成中';
+      beatStatusText.textContent = '正在模拟生成 Beat…';
+      previewWaveLabel.textContent = '生成中';
+      globalDot.classList.remove('active');
+      globalDot.classList.add('busy');
+      globalStatus.textContent = '生成中';
+
+      setTimeout(() => {
+        beatStatusLabel.textContent = '已生成';
+        beatStatusText.textContent = `${selectedBeat} 已准备进入结果预览。`;
+        previewWaveLabel.textContent = '已生成';
+        globalDot.classList.remove('busy');
+        globalDot.classList.add('active');
+        globalStatus.textContent = '已生成';
+        previewResultBadge.textContent = '已完成';
+        updatePreviewSummary();
+      }, 1000);
+    });
+
+    function updatePreviewSummary() {
+      const uploadText = previewUpload.textContent === '未上传' ? '未上传' : previewUpload.textContent;
+      const recordText = previewRecord.textContent || '待开始';
+      const tuneText = previewTune.textContent || '40%';
+      const beatText = previewBeat.textContent || selectedBeat;
+
+      if (uploadText !== '未上传' && recordText === '已完成' && beatStatusLabel.textContent === '已生成') {
+        previewSummary.textContent = `当前结果已就绪：${uploadText} + ${beatText}，Auto-Tune ${tuneText}。`;
+      } else if (uploadText !== '未上传' && recordText !== '待开始') {
+        previewSummary.textContent = `流程进行中：${recordText}，Auto-Tune ${tuneText}，Beat ${beatText}。`;
+      } else {
+        previewSummary.textContent = '等待用户完成上传、录音和生成流程。';
+      }
+    }
+
+    resetPitchDisplay();
+    updateAutoTuneSimulation();
+    updatePreviewSummary();
+    scaleHint.textContent = buildScaleHint(keySelect.value, modeSelect.value);
+  </script>
+</body>
+</html>
+
