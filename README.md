@@ -1,5 +1,8 @@
 # AI Music Web
 
+- 在线体验（网站）：https://bpt9ws4wft-ux.github.io/ai-music-web/
+- GitHub 仓库（代码）：https://github.com/bpt9ws4wft-ux/ai-music-web
+
 ## 项目目标
 AI Music Web 是一个单文件前端原型，用来演示“本地浏览器内的音乐创作辅助流程”。
 
