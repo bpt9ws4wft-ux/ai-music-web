@@ -657,6 +657,20 @@
               <div class="preview-value" id="beatRecommendationReason">暂无 Beat 推荐</div>
             </div>
           </div>
+          <div style="display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 12px;">
+            <div class="preview-label">
+              <small>播放状态</small>
+              <div class="preview-value" id="beatPreviewStatus">未播放</div>
+            </div>
+            <div class="preview-label">
+              <small>当前播放风格</small>
+              <div class="preview-value" id="beatPreviewStyle">暂无 Beat 推荐</div>
+            </div>
+            <div class="preview-label">
+              <small>当前 BPM</small>
+              <div class="preview-value" id="beatPreviewBpm">--</div>
+            </div>
+          </div>
           <div class="button-row" style="margin-top: 12px;">
             <button class="btn btn-primary" id="playBeatBtn">播放推荐 Beat</button>
             <button class="btn btn-secondary" id="stopBeatBtn">停止 Beat</button>
@@ -722,6 +736,9 @@
     const beatRecommendationBpm = document.getElementById('beatRecommendationBpm');
     const beatRecommendationChords = document.getElementById('beatRecommendationChords');
     const beatRecommendationReason = document.getElementById('beatRecommendationReason');
+    const beatPreviewStatus = document.getElementById('beatPreviewStatus');
+    const beatPreviewStyle = document.getElementById('beatPreviewStyle');
+    const beatPreviewBpm = document.getElementById('beatPreviewBpm');
     const playBeatBtn = document.getElementById('playBeatBtn');
     const stopBeatBtn = document.getElementById('stopBeatBtn');
     const beatPreviewHint = document.getElementById('beatPreviewHint');
@@ -1028,6 +1045,7 @@
         beatRecommendationChords.textContent = '--';
         beatRecommendationReason.textContent = '暂无 Beat 推荐';
         updateBeatPreviewHint();
+        updateBeatPreviewStateUI();
         return;
       }
 
@@ -1041,6 +1059,7 @@
         beatRecommendationChords.textContent = '--';
         beatRecommendationReason.textContent = '暂无 Beat 推荐';
         updateBeatPreviewHint();
+        updateBeatPreviewStateUI();
         return;
       }
 
@@ -1055,6 +1074,7 @@
         beatRecommendationChords.textContent = 'I - V - vi - IV';
         beatRecommendationReason.textContent = 'Auto-Tune 强度较高，推荐更稳定、偏电子的节奏走向。';
         updateBeatPreviewHint();
+        updateBeatPreviewStateUI();
         return;
       }
 
@@ -1065,6 +1085,7 @@
         beatRecommendationChords.textContent = 'i - VI - III - VII';
         beatRecommendationReason.textContent = '小调 + 低音区更适合沉稳、带有压迫感的 Trap 结构。';
         updateBeatPreviewHint();
+        updateBeatPreviewStateUI();
         return;
       }
 
@@ -1075,6 +1096,7 @@
         beatRecommendationChords.textContent = 'i - iv - VI - V';
         beatRecommendationReason.textContent = '小调且偏低时，适合更细腻、情绪化的 R&B 节奏。';
         updateBeatPreviewHint();
+        updateBeatPreviewStateUI();
         return;
       }
 
@@ -1085,6 +1107,7 @@
         beatRecommendationChords.textContent = 'I - V - vi - IV';
         beatRecommendationReason.textContent = '大调且音准基本准确时，适合自然、稳定的流行节奏。';
         updateBeatPreviewHint();
+        updateBeatPreviewStateUI();
         return;
       }
 
@@ -1095,6 +1118,7 @@
         beatRecommendationChords.textContent = 'I - vi - IV - V';
         beatRecommendationReason.textContent = '大调且高音区更适合轻盈、清爽的电子节奏。';
         updateBeatPreviewHint();
+        updateBeatPreviewStateUI();
         return;
       }
 
@@ -1104,6 +1128,7 @@
       beatRecommendationChords.textContent = 'I - vi - IV - V';
       beatRecommendationReason.textContent = '当前条件不满足特殊规则时，推荐一套更平衡的自然节奏方案。';
       updateBeatPreviewHint();
+      updateBeatPreviewStateUI();
     }
 
     function updateBeatPreviewHint() {
@@ -1118,6 +1143,16 @@
       } else {
         beatPreviewHint.textContent = '浏览器合成的节奏预览，不是 AI 生成成品。';
       }
+    }
+
+    function updateBeatPreviewStateUI() {
+      const recommendation = getCurrentBeatRecommendation();
+
+      // 让新手一眼看到当前是否在播放，以及对应的风格和 BPM。
+      beatPreviewStatus.textContent = beatPreviewPlaying ? '播放中' : '未播放';
+      beatPreviewStyle.textContent = recommendation ? recommendation.style : '暂无 Beat 推荐';
+      beatPreviewBpm.textContent = recommendation ? `${recommendation.bpm}` : '--';
+      updateBeatPreviewHint();
     }
 
     function getCurrentBeatRecommendation() {
@@ -1167,7 +1202,7 @@
           // 节点已断开时不做处理。
         }
       });
-      beatPreviewActiveNodes = [];
+      beatPreviewActiveNodes.length = 0;
     }
 
     function playKick(time) {
@@ -1229,6 +1264,7 @@
     }
 
     function getBeatPattern(style) {
+      // 每种风格都用不同的节奏模板，方便区分试听体验。
       if (style === '沉浸 Trap') {
         return {
           kick: [1, 0, 0, 0, 1, 0, 0, 0],
@@ -1250,6 +1286,14 @@
           kick: [1, 0, 1, 0, 1, 0, 1, 0],
           snare: [0, 1, 0, 1, 0, 1, 0, 1],
           hat: [1, 0, 1, 0, 1, 0, 1, 0],
+        };
+      }
+
+      if (style === '电子流行' || style === '清爽电子') {
+        return {
+          kick: [1, 0, 1, 0, 1, 0, 1, 0],
+          snare: [0, 1, 0, 1, 0, 1, 0, 1],
+          hat: [1, 1, 0, 1, 1, 1, 0, 1],
         };
       }
 
@@ -1299,10 +1343,11 @@
         await context.resume();
       }
 
+      // 先标记播放状态，再开始调度节奏，保证 UI 反馈及时。
       beatPreviewPlaying = true;
       beatPreviewStep = 0;
       beatPreviewNextStepTime = context.currentTime + 0.05;
-      updateBeatPreviewHint();
+      updateBeatPreviewStateUI();
 
       beatPreviewTimer = setInterval(() => {
         if (!beatPreviewPlaying) {
@@ -1324,8 +1369,10 @@
         beatPreviewTimer = null;
       }
 
+      // 停止后清空引用，避免长时间播放后保留旧节点。
       releaseBeatNodes();
-      updateBeatPreviewHint();
+      beatPreviewActiveNodes = [];
+      updateBeatPreviewStateUI();
     }
 
     function estimatePitchFromBuffer(audioBuffer) {
