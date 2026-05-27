@@ -1,16 +1,19 @@
-"""FastAPI backend for AI Music Web v2.5.
+"""FastAPI backend for AI Music Web v2.6.
 
-Converts any accepted audio upload into a normalised WAV file and returns
-audio analysis, parameter sync, and an engine-ready Auto-Tune profile
-(retune_speed / humanize / formant_preserve / vibrato_preserve) derived
-from measured audio quality and user-selected parameters.
+Converts any accepted audio upload into a normalised WAV file, applies
+real Auto-Tune pitch correction (librosa F0 detection + per-segment
+pitch shifting toward target key/scale), and returns audio analysis,
+parameter sync, and an engine-ready Auto-Tune profile.
 
-No real pitch correction yet — the profile is ready to feed a future
-pyworld + formant shifter engine.
+Pitch correction is a segment-based phase-vocoder MVP — not commercial
+grade, but genuinely changes pitch toward the target scale.
 """
 
 import json
+import logging
 import uuid
+
+import numpy as np
 from pathlib import Path
 from urllib.parse import quote
 
@@ -250,6 +253,283 @@ def _generate_autotune_profile(
     }
 
 
+# ── pitch-correction helpers ────────────────────────────────────────────────
+
+NOTE_MAP = {
+    "C": 0, "C#": 1, "DB": 1, "D": 2, "D#": 3, "EB": 3,
+    "E": 4, "F": 5, "F#": 6, "GB": 6, "G": 7, "G#": 8,
+    "AB": 8, "A": 9, "A#": 10, "BB": 10, "B": 11,
+}
+
+SCALE_INTERVALS = {
+    "major": [0, 2, 4, 5, 7, 9, 11],
+    "minor": [0, 2, 3, 5, 7, 8, 10],
+}
+
+
+def _compute_target_notes(key: str, scale: str) -> set:
+    """Build the set of MIDI note numbers that belong to *key* + *scale*.
+
+    Covers MIDI 36 (C2) – 96 (C7), the practical vocal range.
+    """
+    root = NOTE_MAP.get(key.upper(), 0)
+    intervals = SCALE_INTERVALS.get(scale, SCALE_INTERVALS["major"])
+    notes: set[int] = set()
+    for octave in range(1, 8):
+        for i in intervals:
+            note = root + i + octave * 12
+            if 36 <= note <= 96:
+                notes.add(note)
+    return notes
+
+
+def _pitch_correct(
+    samples: np.ndarray,
+    sr: int,
+    target_notes: set,
+    correction_amount: float,
+    retune_speed: float,
+    style_mode: str = "natural",
+) -> np.ndarray:
+    """Real pitch correction via F0 detection + per-segment phase-vocoder shift.
+
+    Parameters
+    ----------
+    samples : float32 [-1, 1]
+    sr : sample rate (Hz)
+    target_notes : set of allowed MIDI notes
+    correction_amount : 0–100  (blend factor: 0 = dry, 100 = full snap)
+    retune_speed : 0–100  (higher = less smoothing → faster snap)
+    style_mode : str  (natural / pop / trap / robotic)
+    """
+    import librosa
+    from scipy.ndimage import median_filter
+
+    # Quick guard: skip near-silent inputs.
+    if np.sqrt(np.mean(samples ** 2)) < 0.002:
+        logging.info("Pitch correction skipped: near-silent input")
+        return samples
+
+    # ---- F0 detection --------------------------------------------------------
+    try:
+        f0, voiced_flag, _ = librosa.pyin(
+            samples.astype(np.float64),
+            fmin=librosa.note_to_hz("C2"),
+            fmax=librosa.note_to_hz("C7"),
+            sr=sr,
+            hop_length=512,
+        )
+    except Exception:
+        logging.exception("librosa.pyin failed — returning dry signal")
+        return samples
+
+    if f0 is None or not np.any(voiced_flag):
+        logging.info("Pitch correction skipped: no voiced frames detected")
+        return samples
+
+    n_frames = len(f0)
+    strength = correction_amount / 100.0          # 0.0–1.0
+    HARD_TUNE = 0.70                               # threshold for quantize behaviour
+
+    # ---- per-frame semitone correction ---------------------------------------
+    correction_st = np.zeros(n_frames, dtype=np.float64)
+    for i in range(n_frames):
+        if voiced_flag[i] and f0[i] > 0:
+            midi = librosa.hz_to_midi(f0[i])
+            nearest = min(target_notes, key=lambda n: abs(n - midi))
+            raw_diff = nearest - midi               # full semitone gap
+
+            if strength >= HARD_TUNE:
+                # Hard-tune region: accelerate toward full-quantize snap.
+                # At 0.70 strength → 70 % of raw_diff
+                # At 1.00 strength → 100 % of raw_diff (flat target, no vibrato)
+                t = (strength - HARD_TUNE) / (1.0 - HARD_TUNE)  # 0 → 1
+                effective = HARD_TUNE + t * (1.0 - HARD_TUNE)
+                correction_st[i] = raw_diff * effective
+            else:
+                correction_st[i] = raw_diff * strength
+
+    # ---- stair-step quantize for robotic mode --------------------------------
+    if style_mode == "robotic" and strength >= 0.90:
+        # Round corrections to 0.5-st discrete steps — characteristic
+        # "stair-step" pitch contour of hard Auto-Tune.
+        correction_st = np.round(correction_st * 2.0) / 2.0
+
+    # ---- retune_speed → smoothing filter size --------------------------------
+    # More aggressive mode-dependent mapping than v2.6.0.
+    if style_mode == "robotic":
+        filter_size = 1
+    elif style_mode == "trap":
+        filter_size = max(1, int(8 - retune_speed * 0.10))
+    elif style_mode == "pop":
+        filter_size = max(1, int(21 - retune_speed * 0.25))
+    else:  # natural
+        filter_size = max(1, int(25 - retune_speed * 0.32))
+
+    if filter_size > 1:
+        correction_st = median_filter(correction_st, size=filter_size)
+
+    # ---- adaptive segment sizing ---------------------------------------------
+    hop = 512
+    if style_mode == "robotic":
+        seg_samples = 2048          # ~46 ms — fast-tracking, hard snap
+        step = seg_samples // 2     # 50 % overlap
+        use_median = True
+    elif style_mode == "trap":
+        seg_samples = 3072          # ~70 ms — responsive
+        step = seg_samples // 2
+        use_median = True
+    elif style_mode == "pop":
+        seg_samples = 4096          # ~93 ms — balanced
+        step = seg_samples // 3
+        use_median = False
+    else:  # natural
+        seg_samples = 5120          # ~116 ms — slow, smooth
+        step = seg_samples // 3
+        use_median = False
+
+    output = np.zeros(len(samples) + seg_samples, dtype=np.float64)
+    weight = np.zeros_like(output)
+
+    for start in range(0, len(samples), step):
+        end = min(start + seg_samples, len(samples))
+        if end - start < hop:
+            continue
+
+        chunk = samples[start:end].astype(np.float64).copy()
+        chunk_len = len(chunk)
+
+        f_start = start // hop
+        f_end = min(end // hop + 1, n_frames)
+        if f_end > f_start:
+            seg_corrections = correction_st[f_start:f_end]
+            # Median for hard-tune → snappier; mean for natural → smoother.
+            semitones = float(np.median(seg_corrections) if use_median else np.mean(seg_corrections))
+        else:
+            semitones = 0.0
+
+        # Wider clamp for hard-tune mode.
+        max_shift = 8.0 if strength >= HARD_TUNE else 6.0
+        semitones = max(-max_shift, min(max_shift, semitones))
+
+        # Threshold: 1 cent for hard-tune, 3 cents for natural.
+        threshold = 0.01 if strength >= HARD_TUNE else 0.03
+        if abs(semitones) > threshold:
+            try:
+                shifted = librosa.effects.pitch_shift(
+                    y=chunk, sr=sr, n_steps=semitones,
+                )
+            except Exception:
+                shifted = chunk
+        else:
+            shifted = chunk.copy()
+
+        # Overlap-add envelope (simple trapezoid).
+        env = np.ones(chunk_len, dtype=np.float64)
+        if start > 0:
+            r = min(step, chunk_len)
+            env[:r] = np.linspace(0.0, 1.0, r)
+        if end < len(samples):
+            r = min(step, chunk_len)
+            env[-r:] = np.linspace(1.0, 0.0, r)
+
+        out_len = min(chunk_len, len(output) - start)
+        output[start:start + out_len] += shifted[:out_len] * env[:out_len]
+        weight[start:start + out_len] += env[:out_len]
+
+    # Normalise overlap region.
+    mask = weight > 0
+    output[mask] /= weight[mask]
+    output = output[:len(samples)]
+
+    # Final peak protection.
+    peak = np.max(np.abs(output))
+    if peak > 0.95:
+        output *= 0.95 / peak
+
+    return output.astype(np.float32)
+
+
+# ── main processing entry-point ─────────────────────────────────────────────
+
+def _apply_autotune_preview(
+    audio: AudioSegment,
+    profile: dict,
+    analysis: dict,
+) -> AudioSegment:
+    """Apply real Auto-Tune pitch correction + gain staging to a WAV.
+
+    Processing chain:
+    1. Clipping protection (gain reduction in numpy)
+    2. Loudness normalisation (RMS toward -17 dBFS)
+    3. Pitch correction (librosa F0 + per-segment pitch_shift → target scale)
+    4. Style-specific tonal shaping (80 Hz low-cut for trap/robotic)
+    5. Final peak limiting
+    """
+    sr = audio.frame_rate
+    samples = np.array(audio.get_array_of_samples(), dtype=np.float32)
+    samples /= 32768.0              # 16-bit → [-1, 1]
+
+    style_mode = profile.get("style_mode", "natural")
+    correction_amount = float(profile.get("correction_amount", 40))
+    retune_speed = float(profile.get("retune_speed", 50))
+    key = profile.get("target_key", "C")
+    scale = profile.get("target_scale", "major")
+
+    # ---- 1. clipping protection (numpy) --------------------------------------
+    if analysis.get("clipped_risk"):
+        samples *= 0.562            # ≈ -5 dB
+        logging.info("Clipping protection: -5 dB")
+
+    # ---- 2. loudness normalisation (numpy) -----------------------------------
+    rms = float(np.sqrt(np.mean(samples ** 2)))
+    TARGET_RMS = 10.0 ** (-17.0 / 20.0)  # -17 dBFS linear
+
+    if analysis.get("too_quiet") or rms < 10.0 ** (-22.0 / 20.0):
+        if rms > 1e-8:
+            boost = TARGET_RMS / rms
+            boost = min(boost, 16.0)        # max +24 dB
+            samples *= boost
+            logging.info("Loudness boost: %.1f dB", 20.0 * np.log10(boost))
+    elif rms > 10.0 ** (-14.0 / 20.0):
+        cut = TARGET_RMS / rms
+        samples *= cut
+        logging.info("Loudness cut: %.1f dB", 20.0 * np.log10(cut))
+
+    # ---- 3. pitch correction (librosa) ---------------------------------------
+    target_notes = _compute_target_notes(key, scale)
+    logging.info(
+        "Pitch correction: key=%s scale=%s target_notes=%d mode=%s "
+        "correction=%.0f%% retune_speed=%.0f",
+        key, scale, len(target_notes), style_mode, correction_amount, retune_speed,
+    )
+    samples = _pitch_correct(
+        samples, sr, target_notes, correction_amount, retune_speed, style_mode
+    )
+
+    # Convert back to pydub for the remaining pydub-native steps.
+    samples_int16 = (samples * 32767.0).astype(np.int16)
+    audio = AudioSegment(
+        samples_int16.tobytes(),
+        frame_rate=sr,
+        sample_width=2,
+        channels=1,
+    )
+
+    # ---- 4. style-specific tonal shaping -------------------------------------
+    if style_mode in ("trap", "robotic"):
+        audio = audio.high_pass_filter(80)
+        logging.info("Applied low cut (80 Hz) for %s mode", style_mode)
+
+    # ---- 5. final peak protection --------------------------------------------
+    final_peak = audio.max_dBFS
+    if final_peak > -0.5:
+        audio = audio.apply_gain(-0.5 - final_peak)
+        logging.info("Final peak limiter applied (ceiling -0.5 dBFS)")
+
+    return audio
+
+
 @app.get("/health")
 def health():
     """Return a simple health check result."""
@@ -264,7 +544,9 @@ async def process_vocal(
     scale: str = Form("major"),
     beat_style: str = Form("清爽电子"),
 ):
-    """Accept a vocal file, convert it to WAV, and return the WAV."""
+    """Accept a vocal file, convert to WAV, apply real Auto-Tune pitch
+    correction (F0 detection + pitch_shift toward target key/scale),
+    and return the processed WAV with analysis and profile headers."""
     # --- 1. Validate Content-Type -------------------------------------------
     if file.content_type not in ALLOWED_TYPES:
         raise HTTPException(
@@ -316,9 +598,26 @@ async def process_vocal(
                    "Please install ffmpeg and restart the backend.",
         )
 
-    # --- 5. Return converted WAV --------------------------------------------
+    # --- 5. Generate Auto-Tune profile --------------------------------------
+    autotune_profile = _generate_autotune_profile(
+        analysis, autotune_strength, key, scale, beat_style
+    )
+
+    # --- 6. Apply Auto-Tune preview effects ---------------------------------
+    processing_status = "converted-wav"
+    try:
+        audio = AudioSegment.from_file(wav_path)
+        audio = _apply_autotune_preview(audio, autotune_profile, analysis)
+        audio.export(wav_path, format="wav")
+        processing_status = "autotune-preview"
+    except Exception:
+        logging.exception(
+            "Auto-Tune preview processing failed — returning normalised WAV"
+        )
+
+    # --- 7. Return processed WAV --------------------------------------------
     headers = {
-        "X-Processing-Status": "converted-wav",
+        "X-Processing-Status": processing_status,
         "X-Duration-Seconds": str(analysis["duration_seconds"]),
         "X-Sample-Rate": str(analysis["sample_rate"]),
         "X-Channels": str(analysis["channels"]),
@@ -341,9 +640,6 @@ async def process_vocal(
         json.dumps(settings, ensure_ascii=False), safe=""
     )
 
-    autotune_profile = _generate_autotune_profile(
-        analysis, autotune_strength, key, scale, beat_style
-    )
     headers["X-Autotune-Profile"] = quote(
         json.dumps(autotune_profile, ensure_ascii=False), safe=""
     )

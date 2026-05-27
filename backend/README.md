@@ -1,10 +1,12 @@
-# AI Music Web Backend v2.5
+# AI Music Web Backend v2.6
 
 Converts any supported audio file to a normalised WAV (16-bit, 44.1 kHz,
-mono) and returns audio analysis, parameter sync, and an engine-ready
+mono), applies **real Auto-Tune pitch correction** (librosa F0 detection +
+per-segment phase-vocoder pitch-shifting toward the target key/scale),
+and returns audio analysis, parameter sync, and an engine-ready
 Auto-Tune profile with retune_speed, humanize, formant_preserve, and
-vibrato_preserve — all derived from measured audio quality and user intent.
-No real pitch correction yet; the profile is ready to feed a future engine.
+vibrato_preserve.  Pitch correction is an MVP — not commercial-grade,
+but genuinely changes pitch.
 
 ## Prerequisites
 
@@ -97,7 +99,7 @@ curl -v -X POST http://127.0.0.1:8000/process-vocal \
   -o converted.wav
 ```
 
-### Processing Settings (v2.5)
+### Processing Settings
 
 The `/process-vocal` endpoint also accepts optional form fields that are
 echoed back in the `X-Processing-Settings` header (URL-encoded JSON):
@@ -122,10 +124,9 @@ curl -v -X POST http://127.0.0.1:8000/process-vocal \
 ```
 
 The `X-Processing-Settings` response header will contain a URL-encoded
-JSON object mirroring the received parameters.  **This is parameter sync
-only — the backend does not yet apply real Auto-Tune or generate beats.**
+JSON object mirroring the received parameters.
 
-### Auto-Tune Profile Header (v2.5)
+### Auto-Tune Profile Header
 
 The response also includes `X-Autotune-Profile`, a URL-encoded JSON object
 with engine-ready parameters derived from audio analysis and user settings:
@@ -158,15 +159,16 @@ with engine-ready parameters derived from audio analysis and user settings:
 Minor scale increases humanize (+10).  Minor + R&B/Trap beat further
 increases vibrato preserve (+15).
 
-**No real pitch correction is applied** — these are engine-ready parameters
-that a future pyworld + formant shifter pipeline can consume directly.
+Real pitch correction is applied — see **Processing Pipeline** below.
+The profile parameters also serve as a bridge to a future pyworld +
+formant shifter engine for higher-quality correction.
 
 ## API
 
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/health` | Check that the backend is running |
-| `POST` | `/process-vocal` | Upload an audio file → receive a normalised WAV |
+| `POST` | `/process-vocal` | Upload → receive a processed WAV with Auto-Tune preview effects |
 | `DELETE` | `/uploads/{filename}` | Delete a temporary uploaded or processed file |
 
 ## Upload Rules
@@ -175,20 +177,78 @@ that a future pyworld + formant shifter pipeline can consume directly.
 - Allowed input types: WAV, MP3, MP4 audio, M4A
 - Output: always 16-bit 44.1 kHz mono WAV
 
-## Processing Pipeline (current & planned)
+## Processing Pipeline
 
 ```
-Upload → [validate] → [save raw] → [convert to WAV] → [analyse] → return WAV + headers
-                                          ↑
-                                   (pydub + ffmpeg)
+Upload → [validate] → [save raw] → [convert to WAV] → [analyse]
+                                                              ↓
+                                          Auto-Tune profile generation
+                                                              ↓
+                                          Gain staging (clip prot / loudness)
+                                                              ↓
+                                          F0 detection (librosa.pyin)
+                                                              ↓
+                                          Per-segment pitch correction
+                                          (phase vocoder → target scale)
+                                                              ↓
+                                          Tonal shaping + peak limiting
+                                                              ↓
+                                          return processed WAV + headers
 ```
 
-Future steps that will plug in after WAV conversion:
+### Pitch Correction Engine (v2.6)
 
-1. Reliable F0 (pitch) tracking
-2. Real pitch correction with scale/key constraints
-3. High-quality Beat generation or MIDI rendering
-4. Vocal + Beat mixing into a final downloadable stereo file
+The `/process-vocal` endpoint now applies **real pitch correction**:
+
+| Step | Effect | Library |
+|---|---|---|
+| 1 | Gain staging | Clipping prot (−5 dB) + loudness norm (−17 dBFS) |
+| 2 | F0 detection | `librosa.pyin` — probabilistic YIN, fmin=C2, fmax=C7 |
+| 3 | Target scale mapping | Nearest MIDI note in key/scale (36–96) |
+| 4 | Retune smoothing | Median filter: size 21 (natural) … 1 (robotic) |
+| 5 | Per-segment pitch shift | ~93 ms segments, 66 % overlap, `librosa.effects.pitch_shift` |
+| 6 | Tonal shaping + peak limit | 80 Hz low-cut (trap/robotic), ceiling −0.5 dBFS |
+
+**How `autotune_strength` controls the result:**
+
+| Strength | Style | correction_amount | retune_speed | Audible effect |
+|---|---|---|---|---|
+| 20 % | natural | 30 % | 28 | Very subtle — gentle nudge toward scale |
+| 50 % | pop | 50 % | 50 | Moderate — audible correction, still natural |
+| 70 % | trap | 75 % | 72 | Strong — fast snap, clearly tuned |
+| 95 % | robotic | 100 % | 92 | Maximum — instant snap, hard-tuned sound |
+
+- **correction_amount** = pitch blend (0 % = dry, 100 % = full snap)
+- **retune_speed** = smoothing window size (higher = less smoothing = faster snap)
+
+The `X-Processing-Status` response header is `"autotune-preview"` when
+processing succeeds, or `"converted-wav"` on fallback.
+
+### Testing Different Strength Levels
+
+```bash
+# Low strength (subtle, natural) — strength 20
+curl -X POST http://127.0.0.1:8000/process-vocal \
+  -F "file=@vocal.wav" -F "autotune_strength=20" -o strength_20.wav
+
+# Medium strength (audible correction) — strength 50
+curl -X POST http://127.0.0.1:8000/process-vocal \
+  -F "file=@vocal.wav" -F "autotune_strength=50" -o strength_50.wav
+
+# High strength (hard-tuned) — strength 95
+curl -X POST http://127.0.0.1:8000/process-vocal \
+  -F "file=@vocal.wav" -F "autotune_strength=95" -o strength_95.wav
+```
+
+Compare the three files — they should sound progressively more tuned.
+
+Future steps:
+
+1. Higher-quality F0 tracking (pyworld / CREPE for better accuracy)
+2. Real-time formant preservation during pitch shifting
+3. Sample-level pitch correction (PSOLA / WSOLA) instead of segment-based
+4. High-quality Beat generation or MIDI rendering
+5. Vocal + Beat mixing into a final downloadable stereo file
 
 ## Project Structure
 
@@ -207,8 +267,13 @@ backend/
 
 This version does **not**:
 
-- Perform real Auto-Tune
-- Change pitch
+- Use formant preservation (pitch shifting changes formants slightly)
+- Perform sample-level pitch correction (segment-based only, ~93 ms windows)
 - Generate a real Beat
 - Mix vocal and Beat
 - Store user accounts or project history
+
+It **does** apply real pitch correction: librosa F0 detection → per-segment
+phase-vocoder pitch shifting toward the target key/scale, with
+`correction_amount` controlling blend and `retune_speed` controlling
+snap speed.
