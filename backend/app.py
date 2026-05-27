@@ -11,13 +11,16 @@ grade, but genuinely changes pitch toward the target scale.
 
 import json
 import logging
+import time
 import uuid
+from datetime import datetime, timezone
 
 import numpy as np
 from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydub import AudioSegment
@@ -36,6 +39,8 @@ app.add_middleware(
         "X-Audio-Analysis",
         "X-Processing-Settings",
         "X-Autotune-Profile",
+        "X-Beat-Generation-Profile",
+        "X-Profile-Id",
         "X-Processing-Status",
         "X-Duration-Seconds",
         "X-Sample-Rate",
@@ -55,6 +60,10 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 
 PROCESSED_DIR = BASE_DIR / "processed"
 PROCESSED_DIR.mkdir(exist_ok=True)
+
+FEEDBACK_DIR = BASE_DIR / "feedback"
+FEEDBACK_DIR.mkdir(exist_ok=True)
+FEEDBACK_PATH = FEEDBACK_DIR / "feedback.jsonl"
 
 ALLOWED_TYPES = {
     "audio/wav",
@@ -108,6 +117,161 @@ def _convert_to_wav(source_path: Path, dest_path: Path) -> dict:
     }
 
 
+# ── mainstream Auto-Tune preset library (v2.6.2) ─────────────────────────────
+
+MAINSTREAM_AUTOTUNE_PRESETS = {
+    "natural_vocal": {
+        "preset_name": "natural_vocal",
+        "preset_label": "自然修音",
+        "retune_speed": 30,
+        "correction_amount": 35,
+        "humanize": 85,
+        "formant_preserve": 85,
+        "vibrato_preserve": 90,
+        "description": "极慢修正速度，高保留人声质感与颤音。适合民谣、唱作人、不插电。",
+        "suitable_for": ["民谣", "唱作人", "不插电", "Acoustic"],
+    },
+    "mainstream_pop": {
+        "preset_name": "mainstream_pop",
+        "preset_label": "主流流行",
+        "retune_speed": 52,
+        "correction_amount": 55,
+        "humanize": 60,
+        "formant_preserve": 72,
+        "vibrato_preserve": 65,
+        "description": "适中修正速度，平衡自然感与稳定性。适合流行、电子、舞曲。",
+        "suitable_for": ["流行", "电子", "舞曲", "Pop", "EDM"],
+    },
+    "rnb_smooth": {
+        "preset_name": "rnb_smooth",
+        "preset_label": "R&B 顺滑",
+        "retune_speed": 42,
+        "correction_amount": 45,
+        "humanize": 80,
+        "formant_preserve": 82,
+        "vibrato_preserve": 88,
+        "description": "慢中速修正，保留转音与即兴细节。适合 R&B、Soul、慢节奏情歌。",
+        "suitable_for": ["R&B", "Soul", "慢节奏情歌", "Ballad"],
+    },
+    "melodic_rap": {
+        "preset_name": "melodic_rap",
+        "preset_label": "旋律说唱",
+        "retune_speed": 65,
+        "correction_amount": 70,
+        "humanize": 42,
+        "formant_preserve": 58,
+        "vibrato_preserve": 48,
+        "description": "中快速修正，兼顾旋律稳定与说唱节奏感。适合旋律说唱、Hip-Hop。",
+        "suitable_for": ["旋律说唱", "Hip-Hop", "Melodic Rap"],
+    },
+    "trap_hard": {
+        "preset_name": "trap_hard",
+        "preset_label": "Trap 强修",
+        "retune_speed": 82,
+        "correction_amount": 85,
+        "humanize": 25,
+        "formant_preserve": 45,
+        "vibrato_preserve": 28,
+        "description": "快速修正 + 高修量，颤音大幅压制。适合 Trap、Drill、重电子。",
+        "suitable_for": ["Trap", "Drill", "重电子", "Hard Bass"],
+    },
+    "robotic_hyperpop": {
+        "preset_name": "robotic_hyperpop",
+        "preset_label": "电音硬修",
+        "retune_speed": 96,
+        "correction_amount": 96,
+        "humanize": 8,
+        "formant_preserve": 20,
+        "vibrato_preserve": 10,
+        "description": "极速修正 + 最大修量，完全电子感。适合 Hyperpop、实验电子、未来感。",
+        "suitable_for": ["Hyperpop", "实验电子", "未来感", "Experimental"],
+    },
+}
+
+
+# Map preset names to legacy processing-style modes for the pitch-correction engine.
+PRESET_TO_STYLE = {
+    "natural_vocal": "natural",
+    "mainstream_pop": "pop",
+    "rnb_smooth": "natural",   # smooth processing like natural
+    "melodic_rap": "trap",
+    "trap_hard": "trap",
+    "robotic_hyperpop": "robotic",
+}
+
+
+def _match_autotune_preset(
+    autotune_strength: str,
+    beat_style: str,
+    scale: str,
+    analysis: dict,
+) -> dict:
+    """Select the best mainstream Auto-Tune preset based on user input + audio quality.
+
+    Returns a dict with all preset fields plus ``confidence`` and ``preset_source``.
+    Audio-quality adjustments (too_quiet / clipping_risk / minor scale) are
+    applied on top of the preset base values.
+    """
+    strength = int(autotune_strength)
+    too_quiet = analysis.get("too_quiet", False)
+    clipped_risk = analysis.get("clipped_risk", False)
+
+    # ---- rule-based matching (ordered by priority) ---------------------------
+    if strength > 85:
+        name = "robotic_hyperpop"
+        confidence = min(100, 70 + (strength - 85))
+    elif "Trap" in beat_style and strength >= 60:
+        name = "trap_hard"
+        confidence = 78 if strength >= 72 else 62
+    elif "Trap" in beat_style:
+        name = "melodic_rap"
+        confidence = 68
+    elif "R&B" in beat_style:
+        name = "rnb_smooth"
+        confidence = 82 if strength < 60 else 62
+    elif strength >= 60:
+        name = "melodic_rap"
+        confidence = 58
+    elif strength >= 30:
+        name = "mainstream_pop"
+        confidence = 80
+    else:
+        name = "natural_vocal"
+        confidence = 92
+
+    preset = MAINSTREAM_AUTOTUNE_PRESETS[name].copy()
+
+    # ---- audio-quality adjustments -------------------------------------------
+    quality_reasons = []
+
+    if too_quiet:
+        preset["retune_speed"] = max(18, preset["retune_speed"] - 10)
+        preset["correction_amount"] = max(15, preset["correction_amount"] - 20)
+        quality_reasons.append("输入音量过低（< −30 dBFS），已降低修正强度以避免伪影")
+        confidence = max(30, confidence - 20)
+
+    if clipped_risk:
+        preset["correction_amount"] = max(15, preset["correction_amount"] - 15)
+        quality_reasons.append("峰值接近 0 dBFS，存在爆音风险，已降低修正量")
+        confidence = max(30, confidence - 15)
+
+    # ---- scale-based fine-tuning ---------------------------------------------
+    if scale == "minor":
+        preset["humanize"] = min(100, preset["humanize"] + 8)
+        preset["vibrato_preserve"] = min(100, preset["vibrato_preserve"] + 8)
+        # Boost confidence for minor-scale presets like R&B, Trap
+        if name in ("rnb_smooth", "trap_hard", "melodic_rap"):
+            confidence = min(100, confidence + 5)
+
+    preset["confidence"] = confidence
+    preset["preset_source"] = "mainstream_rule_preset"
+
+    # Stash quality reasons for the main reason builder.
+    preset["_quality_reasons"] = quality_reasons
+
+    return preset
+
+
 def _generate_autotune_profile(
     analysis: dict,
     autotune_strength: str,
@@ -115,128 +279,84 @@ def _generate_autotune_profile(
     scale: str,
     beat_style: str,
 ) -> dict:
-    """Generate engine-ready Auto-Tune parameters from audio analysis and user input.
+    """Generate engine-ready Auto-Tune parameters using the mainstream preset library.
 
-    The profile includes real tunable values (retune_speed, humanize,
-    formant_preserve, vibrato_preserve) that a future pyworld + formant
-    shifter pipeline can consume directly.  Parameters are chosen to match
-    the user's style intent while respecting measured audio quality.
+    A rule-based matcher picks the closest preset from MAINSTREAM_AUTOTUNE_PRESETS,
+    then audio-quality flags (too_quiet, clipping_risk) and scale (minor/major)
+    fine-tune the values.  The resulting profile is consumable by both the
+    current pitch-correction engine and a future pyworld + formant shifter.
     """
-    avg = analysis["average_dbfs"]
-    peak = analysis["peak_dbfs"]
-    strength = int(autotune_strength)
+    # ---- 1. match preset -----------------------------------------------------
+    preset = _match_autotune_preset(autotune_strength, beat_style, scale, analysis)
 
-    # ── 1. style_mode (strength band primary, scale/beat secondary) ────
-    if strength < 30:
-        style_mode = "natural"
-    elif strength < 60:
-        style_mode = "pop"
-    elif strength <= 80:
-        style_mode = "trap"
-    else:
-        style_mode = "robotic"
+    retune_speed = preset["retune_speed"]
+    correction_amount = preset["correction_amount"]
+    humanize = preset["humanize"]
+    formant_preserve = preset["formant_preserve"]
+    vibrato_preserve = preset["vibrato_preserve"]
+    preset_name = preset["preset_name"]
+    preset_label = preset["preset_label"]
+    suitable_for = preset.get("suitable_for", [])
+    confidence = preset["confidence"]
+    quality_reasons = preset.get("_quality_reasons", [])
+
+    # ---- 2. legacy style_mode (for pitch-correction engine) ------------------
+    style_mode = PRESET_TO_STYLE.get(preset_name, "natural")
 
     style_labels = {
         "natural": "自然", "pop": "流行", "rnb": "R&B",
         "trap": "Trap", "robotic": "电子感",
     }
 
-    # ── 2. retune_speed (0–100, higher = faster snap to target) ────────
-    base_speed = {
-        "natural": 28, "pop": 50, "rnb": 38, "trap": 72, "robotic": 92,
-    }[style_mode]
-    if avg < -35:
-        retune_speed = max(18, base_speed - 12)
-    elif peak > -1:
-        retune_speed = max(22, base_speed - 8)
-    else:
-        retune_speed = base_speed
-
-    # ── 3. correction_amount (0–100) ───────────────────────────────────
-    if strength > 80:
-        correction_amount = min(100, strength + 10)
-    elif strength >= 60:
-        correction_amount = strength + 5
-    elif strength >= 30:
-        correction_amount = strength
-    else:
-        correction_amount = strength + 10
-    if avg < -35:
-        correction_amount = max(5, correction_amount - 25)
-    elif peak > -1:
-        correction_amount = max(10, correction_amount - 15)
-
-    # ── 4. humanize (0–100, higher = more natural timing jitter) ───────
-    humanize = {
-        "natural": 85, "pop": 55, "rnb": 72, "trap": 30, "robotic": 10,
-    }[style_mode]
-    if scale == "minor":
-        humanize = min(100, humanize + 10)
-
-    # ── 5. formant_preserve (0–100, keep original vocal character) ─────
-    formant_preserve = {
-        "natural": 80, "pop": 65, "rnb": 78, "trap": 45, "robotic": 15,
-    }[style_mode]
-
-    # ── 6. vibrato_preserve (0–100, keep natural vibrato) ──────────────
-    vibrato_preserve = {
-        "natural": 90, "pop": 55, "rnb": 88, "trap": 25, "robotic": 5,
-    }[style_mode]
-    if scale == "minor" and ("R&B" in beat_style or "Trap" in beat_style):
-        vibrato_preserve = min(100, vibrato_preserve + 15)
-
-    # ── 7. vocal_quality ───────────────────────────────────────────────
+    # ---- 3. vocal_quality ----------------------------------------------------
     quality_parts = []
-    if avg < -35:
+    if analysis.get("too_quiet"):
         quality_parts.append("too_quiet")
-    if peak > -1:
+    if analysis.get("clipped_risk"):
         quality_parts.append("clipping_risk")
     if not quality_parts:
         quality_parts.append("normal")
     vocal_quality = " | ".join(quality_parts)
 
-    # ── 8. reason ──────────────────────────────────────────────────────
+    # ---- 4. reason -----------------------------------------------------------
     scale_label = "小调" if scale == "minor" else "大调"
-    reasons = []
-    if avg < -35:
-        reasons.append("输入音量过低（< −35 dBFS），不建议强修，先提高录制音量")
-    if peak > -1:
-        reasons.append("峰值接近 0 dBFS，存在爆音风险，建议降低输入增益")
+    reasons = list(quality_reasons)
 
-    if style_mode == "robotic":
-        reasons.append(
-            f"强度 {strength}% 触发电子感模式 → retune {retune_speed} / "
-            f"humanize {humanize} / formant {formant_preserve}"
-        )
-    elif style_mode == "trap":
-        reasons.append(
-            f"强度 {strength}% + {scale_label}匹配强修模式 → retune {retune_speed} / "
-            f"correction {correction_amount}%"
-        )
-    elif style_mode == "pop":
-        reasons.append(
-            f"强度 {strength}% + {scale_label}匹配流行模式 → retune {retune_speed} / "
-            f"humanize {humanize}（兼顾稳定与自然）"
-        )
-    else:
-        reasons.append(
-            f"强度 {strength}% 匹配自然模式 → 慢修正、高保留 "
-            f"(humanize {humanize} / vibrato {vibrato_preserve})"
-        )
+    reasons.append(
+        f"匹配预设「{preset_label}」— {preset['description']} "
+        f"(置信度 {confidence}%)"
+    )
+    reasons.append(
+        f"参数：retune {retune_speed} / correction {correction_amount}% / "
+        f"humanize {humanize} / formant {formant_preserve} / vibrato {vibrato_preserve}"
+    )
+    if scale == "minor":
+        reasons.append(f"{scale_label} → humanize +8, vibrato_preserve +8 以保留情绪感")
+    if "Trap" in beat_style:
+        reasons.append(f"Beat 风格「{beat_style}」→ 倾向 Trap/说唱类预设")
+    elif "R&B" in beat_style:
+        reasons.append(f"Beat 风格「{beat_style}」→ 倾向 R&B 顺滑预设")
 
-    # ── 9. next_step ───────────────────────────────────────────────────
-    if avg < -35 or peak > -1:
+    # ---- 5. next_step --------------------------------------------------------
+    if analysis.get("too_quiet") or analysis.get("clipped_risk"):
         next_step = "音频质量存在问题，建议先改善录音条件（输入音量/爆音），再重新上传分析"
-    elif style_mode == "natural":
+    elif preset_name == "natural_vocal":
         next_step = "人声自然稳定，参数保守。可直接进入 Beat 匹配阶段"
-    elif style_mode == "pop":
+    elif preset_name == "mainstream_pop":
         next_step = "已生成流行修音参数（retune 适中），建议匹配流行/电子风格 Beat"
-    elif style_mode == "trap":
+    elif preset_name in ("melodic_rap", "trap_hard"):
         next_step = "已生成强修参数（retune 快 + correction 高），建议匹配 Trap/电子 Beat"
-    else:
+    elif preset_name == "robotic_hyperpop":
         next_step = "已生成电子感参数（retune 极快），建议匹配未来感/电子 Beat"
+    else:
+        next_step = "已生成 R&B 顺滑参数，建议匹配 R&B/Soul 风格 Beat"
 
     return {
+        "preset_name": preset_name,
+        "preset_label": preset_label,
+        "suitable_for": suitable_for,
+        "preset_source": "mainstream_rule_preset",
+        "confidence": confidence,
         "target_key": key,
         "target_scale": scale,
         "target_scale_label": scale_label,
@@ -249,6 +369,142 @@ def _generate_autotune_profile(
         "style_mode_label": style_labels[style_mode],
         "vocal_quality": vocal_quality,
         "reason": "；".join(reasons),
+        "next_step": next_step,
+    }
+
+
+
+def _generate_beat_profile(
+    analysis: dict,
+    autotune_profile: dict,
+    beat_style: str,
+) -> dict:
+    """Generate intelligent Beat-generation parameters from audio analysis
+    and Auto-Tune profile.
+
+    This does NOT generate actual Beat audio — it produces a parameter
+    blueprint that a future Beat engine can consume.
+    """
+    style_mode = autotune_profile.get("style_mode", "natural")
+    key = autotune_profile.get("target_key", "C")
+    scale = autotune_profile.get("target_scale", "major")
+    too_quiet = analysis.get("too_quiet", False)
+    clipped_risk = analysis.get("clipped_risk", False)
+    correction_amount = autotune_profile.get("correction_amount", 40)
+
+    # ---- 1. target_bpm -------------------------------------------------------
+    BPM_MAP = {
+        "清爽电子": 120, "沉浸 Trap": 140, "流行节奏": 110,
+        "未来 R&B": 90, "轻电子": 115, "氛围感": 85,
+    }
+    target_bpm = BPM_MAP.get(beat_style, 110)
+
+    # ---- 2. groove_type ------------------------------------------------------
+    if "Trap" in beat_style:
+        groove_type = "triplet_hihat"
+    elif "R&B" in beat_style:
+        groove_type = "swing"
+    else:
+        groove_type = "straight"
+
+    # ---- 3. drum_density (0–100) ---------------------------------------------
+    if style_mode in ("robotic", "trap"):
+        drum_density = 75
+    elif style_mode == "pop":
+        drum_density = 60
+    else:
+        drum_density = 50
+
+    if clipped_risk:
+        drum_density = max(30, drum_density - 20)
+    if too_quiet:
+        drum_density = max(25, drum_density - 15)
+    if scale == "minor":
+        drum_density = min(90, drum_density + 5)
+    if correction_amount > 80:
+        drum_density = min(95, drum_density + 10)
+
+    # ---- 4. bass_intensity (0–100) -------------------------------------------
+    if style_mode in ("robotic", "trap"):
+        bass_intensity = 80
+    elif "Trap" in beat_style:
+        bass_intensity = 75
+    elif style_mode == "pop":
+        bass_intensity = 55
+    else:
+        bass_intensity = 45
+
+    if clipped_risk:
+        bass_intensity = max(30, bass_intensity - 15)
+    if scale == "minor" and ("Trap" in beat_style or style_mode == "trap"):
+        bass_intensity = min(95, bass_intensity + 10)
+    if correction_amount > 80:
+        bass_intensity = min(95, bass_intensity + 8)
+
+    # ---- 5. chord_progression ------------------------------------------------
+    if scale == "major":
+        if style_mode in ("robotic", "trap"):
+            chords = f"I–V–vi–IV in {key} major（电子/强修和声）"
+        elif style_mode == "pop":
+            chords = f"I–V–vi–IV in {key} major（流行万能进行）"
+        else:
+            chords = f"I–IV–V–I in {key} major（经典终止式）"
+    else:
+        if style_mode in ("robotic", "trap"):
+            chords = f"i–VI–III–VII in {key} minor（Trap/电子色彩）"
+        elif "R&B" in beat_style:
+            chords = f"i–iv–VII–III in {key} minor（R&B 色彩进行）"
+        else:
+            chords = f"i–iv–v–i in {key} minor（小调经典）"
+
+    # ---- 6. arrangement_hint -------------------------------------------------
+    if style_mode in ("robotic", "trap"):
+        arrangement = "前奏8 → 主歌16(稀疏) → 副歌16(全编) → 尾奏8"
+    elif style_mode == "pop":
+        arrangement = "前奏4 → 主歌8 → 预副歌4 → 副歌16 → 桥段8 → 尾奏"
+    else:
+        arrangement = "前奏4 → 主歌16 → 副歌16 → 尾奏8"
+
+    # ---- 7. match_reason -----------------------------------------------------
+    reasons = []
+    if "Trap" in beat_style:
+        reasons.append(f"{beat_style} → {target_bpm} BPM + triplet hi-hat + 808 bass")
+    elif "R&B" in beat_style:
+        reasons.append(f"{beat_style} → {target_bpm} BPM + swing feel + 柔和鼓组")
+    elif "电子" in beat_style:
+        reasons.append(f"{beat_style} → {target_bpm} BPM + 电子底鼓 + 合成器铺底")
+    else:
+        reasons.append(f"{beat_style} → {target_bpm} BPM + 稳定节奏")
+
+    if style_mode == "robotic":
+        reasons.append("Auto-Tune 电子感 → 强鼓点 + 重低频 + 合成器主导")
+    elif style_mode == "trap":
+        reasons.append("Auto-Tune 强修 → Trap 鼓组 + 808 bass 推进")
+    elif style_mode == "pop":
+        reasons.append("Auto-Tune 流行 → 干净节奏 + 适度低频")
+    else:
+        reasons.append("Auto-Tune 自然 → 简约编曲，不遮盖人声细节")
+
+    if too_quiet:
+        reasons.append("人声偏低 → 建议先提升录音音量")
+    if clipped_risk:
+        reasons.append("人声有爆音风险 → 鼓组密度已降低")
+
+    # ---- 8. next_step --------------------------------------------------------
+    if too_quiet or clipped_risk:
+        next_step = "先改善录音质量，再进入 Beat 生成阶段"
+    else:
+        next_step = "参数已就绪，可进入 Beat 音频生成阶段（下一版本实现）"
+
+    return {
+        "target_bpm": target_bpm,
+        "beat_style": beat_style,
+        "groove_type": groove_type,
+        "drum_density": drum_density,
+        "bass_intensity": bass_intensity,
+        "chord_progression": chords,
+        "arrangement_hint": arrangement,
+        "match_reason": "；".join(reasons) if reasons else "—",
         "next_step": next_step,
     }
 
@@ -603,6 +859,9 @@ async def process_vocal(
         analysis, autotune_strength, key, scale, beat_style
     )
 
+    # --- 5b. Generate Beat-generation profile ---------------------------------
+    beat_profile = _generate_beat_profile(analysis, autotune_profile, beat_style)
+
     # --- 6. Apply Auto-Tune preview effects ---------------------------------
     processing_status = "converted-wav"
     try:
@@ -644,6 +903,12 @@ async def process_vocal(
         json.dumps(autotune_profile, ensure_ascii=False), safe=""
     )
 
+    headers["X-Beat-Generation-Profile"] = quote(
+        json.dumps(beat_profile, ensure_ascii=False), safe=""
+    )
+
+    headers["X-Profile-Id"] = unique_id
+
     return FileResponse(
         path=str(wav_path),
         media_type="audio/wav",
@@ -669,3 +934,54 @@ def delete_upload(filename: str):
 
     target.unlink()
     return {"status": "deleted", "filename": filename}
+
+
+# ── feedback learning loop (v2.6.3) ──────────────────────────────────────────
+
+VALID_FEEDBACK_LABELS = {"too_light", "good", "too_heavy", "too_fake", "more_natural"}
+
+
+class FeedbackRequest(BaseModel):
+    profile_id: str
+    feedback: str
+    note: str | None = None
+
+
+@app.post("/feedback")
+async def submit_feedback(body: FeedbackRequest):
+    """Record user feedback for a previously generated Auto-Tune profile.
+
+    Accepts a JSON body with ``profile_id``, ``feedback`` (English key), and
+    an optional ``note``.  Saves one JSONL line to
+    ``backend/feedback/feedback.jsonl``.  No audio data is stored.
+
+    This data will power future personalised Auto-Tune recommendation models.
+    """
+    if body.feedback not in VALID_FEEDBACK_LABELS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid feedback label: {body.feedback!r}. "
+                   f"Must be one of {sorted(VALID_FEEDBACK_LABELS)}.",
+        )
+
+    record: dict = {
+        "profile_id": body.profile_id,
+        "feedback": body.feedback,
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    if body.note is not None:
+        record["note"] = body.note
+
+    try:
+        with open(FEEDBACK_PATH, "a", encoding="utf-8") as fh:
+            json.dump(record, fh, ensure_ascii=False)
+            fh.write("\n")
+    except OSError as exc:
+        logging.exception("Failed to write feedback record")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not save feedback: {exc}",
+        )
+
+    logging.info("Feedback recorded: profile_id=%s feedback=%s", body.profile_id, body.feedback)
+    return {"status": "recorded", "profile_id": body.profile_id, "feedback": body.feedback}

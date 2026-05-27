@@ -1,12 +1,11 @@
-# AI Music Web Backend v2.6
+# AI Music Web Backend v2.7 (with v2.6.2 preset engine)
 
 Converts any supported audio file to a normalised WAV (16-bit, 44.1 kHz,
-mono), applies **real Auto-Tune pitch correction** (librosa F0 detection +
-per-segment phase-vocoder pitch-shifting toward the target key/scale),
-and returns audio analysis, parameter sync, and an engine-ready
-Auto-Tune profile with retune_speed, humanize, formant_preserve, and
-vibrato_preserve.  Pitch correction is an MVP — not commercial-grade,
-but genuinely changes pitch.
+mono), applies **real Auto-Tune pitch correction** using a **mainstream
+preset library** (6 curated styles with rule-based matching), generates
+**intelligent Beat-generation parameters**, and returns audio analysis,
+parameter sync, an engine-ready Auto-Tune profile, and a Beat-generation
+blueprint.  Pitch correction is an MVP; Beat generation is parameter-only.
 
 ## Prerequisites
 
@@ -129,46 +128,103 @@ JSON object mirroring the received parameters.
 ### Auto-Tune Profile Header
 
 The response also includes `X-Autotune-Profile`, a URL-encoded JSON object
-with engine-ready parameters derived from audio analysis and user settings:
+with engine-ready parameters derived from the **mainstream preset library**
+and fine-tuned by audio quality analysis:
 
 | Field | Example | Description |
 |---|---|---|
-| `style_mode` | `pop` | `natural` / `pop` / `rnb` / `trap` / `robotic` |
-| `style_mode_label` | `流行` | Chinese label for the style |
-| `retune_speed` | `55` | 0–100, higher = faster pitch snap |
-| `correction_amount` | `70` | 0–100, how much correction to apply |
-| `humanize` | `50` | 0–100, timing jitter for natural feel |
-| `formant_preserve` | `70` | 0–100, keep original vocal character |
-| `vibrato_preserve` | `60` | 0–100, keep natural vibrato |
+| `preset_name` | `trap_hard` | Matched preset ID (v2.6.2) |
+| `preset_label` | `Trap 强修` | Chinese preset label |
+| `preset_source` | `mainstream_rule_preset` | Always `mainstream_rule_preset` |
+| `confidence` | `78` | 0–100, match confidence |
+| `style_mode` | `trap` | Legacy engine mode (`natural` / `pop` / `rnb` / `trap` / `robotic`) |
+| `style_mode_label` | `Trap` | Chinese label for the engine mode |
+| `retune_speed` | `82` | 0–100, higher = faster pitch snap |
+| `correction_amount` | `85` | 0–100, how much correction to apply |
+| `humanize` | `25` | 0–100, timing jitter for natural feel |
+| `formant_preserve` | `45` | 0–100, keep original vocal character |
+| `vibrato_preserve` | `28` | 0–100, keep natural vibrato |
 | `target_key` | `C` | Target root key |
 | `target_scale` | `major` | Target scale |
 | `target_scale_label` | `大调` | Chinese label for the scale |
-| `vocal_quality` | `正常` | Quality assessment |
+| `vocal_quality` | `normal` | Quality assessment |
 | `reason` | (string) | Why these parameters were chosen |
 | `next_step` | (string) | Suggested next action for the user |
 
-### Style Mode Mapping
+### Mainstream Preset Library (v2.6.2)
 
-| Strength | Default Mode | Characteristics |
+Six curated presets replace the old strength-band-only mapping:
+
+| Preset | retune | correction | humanize | formant | vibrato | Best for |
+|---|---|---|---|---|---|---|
+| `natural_vocal` 自然修音 | 30 | 35 % | 85 | 85 | 90 | 民谣、唱作人、不插电 |
+| `mainstream_pop` 主流流行 | 52 | 55 % | 60 | 72 | 65 | 流行、电子、舞曲 |
+| `rnb_smooth` R&B 顺滑 | 42 | 45 % | 80 | 82 | 88 | R&B、Soul、慢节奏情歌 |
+| `melodic_rap` 旋律说唱 | 65 | 70 % | 42 | 58 | 48 | 旋律说唱、Hip-Hop |
+| `trap_hard` Trap 强修 | 82 | 85 % | 25 | 45 | 28 | Trap、Drill、重电子 |
+| `robotic_hyperpop` 电音硬修 | 96 | 96 % | 8 | 20 | 10 | Hyperpop、实验电子、未来感 |
+
+### Preset Matching Rules (ordered by priority)
+
+| Priority | Condition | Result |
 |---|---|---|
-| < 30 | `natural` | Slow retune, high humanize, max vibrato/formant preserve |
-| 30–59 | `pop` | Medium retune, balanced humanize |
-| 60–80 | `trap` | Fast retune, high correction, low humanize |
-| > 80 | `robotic` | Very fast retune, minimal humanize/formant/vibrato |
+| 1 | `autotune_strength` > 85 | `robotic_hyperpop` |
+| 2 | `beat_style` contains "Trap" **and** strength ≥ 60 | `trap_hard` |
+| 3 | `beat_style` contains "Trap" **and** strength < 60 | `melodic_rap` |
+| 4 | `beat_style` contains "R&B" | `rnb_smooth` |
+| 5 | strength 60–85 (no style match) | `melodic_rap` |
+| 6 | strength 30–60 (no style match) | `mainstream_pop` |
+| 7 | strength < 30 (no style match) | `natural_vocal` |
 
-Minor scale increases humanize (+10).  Minor + R&B/Trap beat further
-increases vibrato preserve (+15).
+Audio-quality adjustments applied on top of presets:
+- **too_quiet** → retune −10, correction −20, confidence −20
+- **clipping_risk** → correction −15, confidence −15
+- **minor scale** → humanize +8, vibrato_preserve +8 (preserves emotional feel)
+
+All parameters are derived from the preset library with audio-quality
+fine-tuning — see **Mainstream Preset Library** and **Preset Matching Rules** above.
 
 Real pitch correction is applied — see **Processing Pipeline** below.
 The profile parameters also serve as a bridge to a future pyworld +
 formant shifter engine for higher-quality correction.
+
+### Beat-Generation Profile Header (v2.7)
+
+The response also includes `X-Beat-Generation-Profile`, a URL-encoded JSON
+object with Beat-generation parameters derived from audio analysis,
+Auto-Tune profile, and user-selected beat style.  **This is parameter-only —
+no Beat audio is generated yet.**
+
+| Field | Example | Description |
+|---|---|---|
+| `target_bpm` | `140` | Suggested tempo for the beat |
+| `beat_style` | `沉浸 Trap` | User-selected beat style |
+| `groove_type` | `triplet_hihat` | `straight` / `swing` / `triplet_hihat` |
+| `drum_density` | `75` | 0–100, drum pattern fill level |
+| `bass_intensity` | `80` | 0–100, bass/sub-bass presence |
+| `chord_progression` | `i–VI–III–VII in C minor` | Suggested chord loop |
+| `arrangement_hint` | `前奏8 → 主歌16 …` | Section-by-section arrangement template |
+| `match_reason` | (string) | Why these parameters were chosen |
+| `next_step` | (string) | Suggested next action for the user |
+
+#### Parameter Rules
+
+| Condition | Effect |
+|---|---|
+| `clipped_risk` | Drum density −20, bass intensity −15 — keep the beat less busy |
+| `too_quiet` | Drum density −15 — don't overwhelm weak vocals |
+| `minor` scale + Trap/R&B | Bass intensity +10, drum density +5 |
+| `robotic` / `trap` Auto-Tune | Strong drums + heavy bass + synth-driven arrangement |
+| `natural` / `pop` Auto-Tune | Clean rhythm + moderate bass, preserves vocal detail |
+| `correction_amount` > 80 | Extra +10 density, +8 bass — match the aggressive tuning |
 
 ## API
 
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/health` | Check that the backend is running |
-| `POST` | `/process-vocal` | Upload → receive a processed WAV with Auto-Tune preview effects |
+| `POST` | `/process-vocal` | Upload → processed WAV + Auto-Tune profile + Beat-gen blueprint |
+| `POST` | `/feedback` | Submit Auto-Tune quality feedback for ML training (v2.6.3) |
 | `DELETE` | `/uploads/{filename}` | Delete a temporary uploaded or processed file |
 
 ## Upload Rules
@@ -260,6 +316,8 @@ backend/
 ├── .gitignore
 ├── uploads/            # Raw uploaded files (auto-created)
 ├── processed/          # Converted WAV files (auto-created)
+├── feedback/           # User feedback records (auto-created)
+│   └── feedback.jsonl  # Labelled training data for future ML
 └── .venv/              # Virtual environment (not committed)
 ```
 
@@ -269,11 +327,42 @@ This version does **not**:
 
 - Use formant preservation (pitch shifting changes formants slightly)
 - Perform sample-level pitch correction (segment-based only, ~93 ms windows)
-- Generate a real Beat
+- Generate Beat audio (parameter blueprint only — `X-Beat-Generation-Profile`)
 - Mix vocal and Beat
 - Store user accounts or project history
 
-It **does** apply real pitch correction: librosa F0 detection → per-segment
-phase-vocoder pitch shifting toward the target key/scale, with
-`correction_amount` controlling blend and `retune_speed` controlling
-snap speed.
+It **does** apply real pitch correction, generate intelligent Beat-generation
+parameters, and collect user feedback for future personalised recommendations.
+
+## Feedback System (v2.6.3)
+
+The `/process-vocal` response includes an `X-Profile-Id` header.  The
+frontend shows five feedback buttons after processing:
+
+| Label | Meaning |
+|---|---|
+| 太轻 | Correction too weak — want stronger tuning |
+| 正好 | Just right — parameters are well-matched |
+| 太重 | Too aggressive — want more natural sound |
+| 太假 | Sounds artificial — reduce robotic character |
+| 更自然 | Want more human-like / transparent processing |
+
+### POST /feedback
+
+```
+profile_id=<X-Profile-Id value>
+label=<one of the five labels above>
+```
+
+Each submission appends one line to `backend/feedback/feedback.jsonl`:
+
+```json
+{"profile_id": "abc123", "label": "正好", "timestamp_utc": "2026-05-27T..."}
+```
+
+**Design principles:**
+- No audio data is stored — only parameter metadata and feedback labels
+- Data stays local (no cloud upload, no external service)
+- Purpose: build a labelled dataset for future personalised Auto-Tune
+  strength recommendation (e.g., "given vocal quality X and beat style Y,
+  predict whether the user will find the correction too light/just right/too heavy")

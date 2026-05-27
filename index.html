@@ -470,7 +470,55 @@
                 <div id="profileNextStep" style="font-size:13px; color:var(--text); line-height:1.6;">--</div>
               </div>
             </div>
-            <p class="section-copy" style="margin-top: 12px; margin-bottom: 0;">v2.6：已执行基础音高校正 MVP（F0 检测 + per-segment pitch_shift → 目标音阶），retune_speed / humanize / formant_preserve 等引擎参数已生成。</p>
+            <div id="beatProfile" style="display:none; margin-top:12px; padding:12px; border-radius:12px; background:linear-gradient(180deg, rgba(34,211,238,0.08), rgba(52,211,153,0.05)); border:1px solid rgba(34,211,238,0.15);">
+              <small style="color:var(--accent-2); display:block; margin-bottom:8px; font-weight:700;">智能 Beat 生成方案（当前为参数方案，非最终伴奏音频）</small>
+              <div style="display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:8px;">
+                <div style="padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
+                  <small style="color:var(--muted); display:block; font-size:11px;">目标 BPM</small>
+                  <div id="beatTargetBpm" style="font-size:14px; font-weight:700; color:var(--accent-2);">--</div>
+                </div>
+                <div style="padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
+                  <small style="color:var(--muted); display:block; font-size:11px;">Groove 类型</small>
+                  <div id="beatGrooveType" style="font-size:14px; font-weight:700; color:var(--text);">--</div>
+                </div>
+                <div style="padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
+                  <small style="color:var(--muted); display:block; font-size:11px;">鼓组密度</small>
+                  <div id="beatDrumDensity" style="font-size:14px; font-weight:700; color:var(--text);">--</div>
+                </div>
+                <div style="padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
+                  <small style="color:var(--muted); display:block; font-size:11px;">低频强度</small>
+                  <div id="beatBassIntensity" style="font-size:14px; font-weight:700; color:var(--text);">--</div>
+                </div>
+                <div style="padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
+                  <small style="color:var(--muted); display:block; font-size:11px;">和弦进行</small>
+                  <div id="beatChords" style="font-size:13px; font-weight:700; color:var(--text);">--</div>
+                </div>
+                <div style="padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
+                  <small style="color:var(--muted); display:block; font-size:11px;">编曲结构</small>
+                  <div id="beatArrangement" style="font-size:12px; font-weight:700; color:var(--text);">--</div>
+                </div>
+              </div>
+              <div style="margin-top:8px; padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
+                <small style="color:var(--muted); display:block; font-size:11px; margin-bottom:4px;">匹配理由</small>
+                <div id="beatMatchReason" style="font-size:13px; color:var(--text); line-height:1.6;">--</div>
+              </div>
+              <div style="margin-top:8px; padding:8px 10px; border-radius:8px; background:rgba(52,211,153,0.06); border:1px solid rgba(52,211,153,0.12);">
+                <small style="color:var(--success); display:block; font-size:11px; margin-bottom:4px;">下一步建议</small>
+                <div id="beatNextStep" style="font-size:13px; color:var(--text); line-height:1.6;">--</div>
+              </div>
+            </div>
+            <div id="feedbackSection" style="display:none; margin-top:12px; padding:12px; border-radius:12px; background:linear-gradient(180deg, rgba(245,158,11,0.06), rgba(245,158,11,0.02)); border:1px solid rgba(245,158,11,0.15);">
+              <small style="color:var(--warning); display:block; margin-bottom:8px; font-weight:700;">修音效果如何？（为后续个性化推荐积累数据）</small>
+              <div style="display:flex; gap:8px; flex-wrap:wrap;" id="feedbackButtons">
+                <button class="btn btn-secondary feedback-btn" data-label="too_light" style="font-size:13px; padding:6px 14px;">太轻</button>
+                <button class="btn btn-secondary feedback-btn" data-label="good" style="font-size:13px; padding:6px 14px;">正好</button>
+                <button class="btn btn-secondary feedback-btn" data-label="too_heavy" style="font-size:13px; padding:6px 14px;">太重</button>
+                <button class="btn btn-secondary feedback-btn" data-label="too_fake" style="font-size:13px; padding:6px 14px;">太假</button>
+                <button class="btn btn-secondary feedback-btn" data-label="more_natural" style="font-size:13px; padding:6px 14px;">更自然</button>
+              </div>
+              <small id="feedbackResult" style="display:none; margin-top:8px; color:var(--success);"></small>
+            </div>
+            <p class="section-copy" style="margin-top: 12px; margin-bottom: 0;">v2.6.3：已执行基础音高校正 MVP + 智能 Beat 生成参数方案 + 反馈学习系统。</p>
           </div>
         </div>
 
@@ -841,6 +889,18 @@
     const profileQuality = document.getElementById('profileQuality');
     const profileReason = document.getElementById('profileReason');
     const profileNextStep = document.getElementById('profileNextStep');
+    const beatProfile = document.getElementById('beatProfile');
+    const beatTargetBpm = document.getElementById('beatTargetBpm');
+    const beatGrooveType = document.getElementById('beatGrooveType');
+    const beatDrumDensity = document.getElementById('beatDrumDensity');
+    const beatBassIntensity = document.getElementById('beatBassIntensity');
+    const beatChords = document.getElementById('beatChords');
+    const beatArrangement = document.getElementById('beatArrangement');
+    const beatMatchReason = document.getElementById('beatMatchReason');
+    const beatNextStep = document.getElementById('beatNextStep');
+    const feedbackSection = document.getElementById('feedbackSection');
+    const feedbackButtons = document.getElementById('feedbackButtons');
+    const feedbackResult = document.getElementById('feedbackResult');
     const recordAudioPlayer = document.getElementById('recordAudioPlayer');
     const recordPreviewLabel = document.getElementById('recordPreviewLabel');
     const recordStatusBadge = document.getElementById('recordStatusBadge');
@@ -853,6 +913,7 @@
     let selectedUploadFile = null;
     let currentObjectUrl = null;
     let currentBackendUrl = null;
+    let currentProfileId = null;
     let currentRecordUrl = null;
     let mediaRecorder = null;
     let mediaStream = null;
@@ -1051,6 +1112,82 @@
       profileNextStep.textContent = profile.next_step;
       autotuneProfile.style.display = 'block';
     }
+
+    function displayBeatProfile(profile) {
+      beatTargetBpm.textContent = profile.target_bpm;
+      beatGrooveType.textContent = profile.groove_type;
+      beatDrumDensity.textContent = `${profile.drum_density}%`;
+      beatBassIntensity.textContent = `${profile.bass_intensity}%`;
+      beatChords.textContent = profile.chord_progression;
+      beatArrangement.textContent = profile.arrangement_hint;
+      beatMatchReason.textContent = profile.match_reason;
+      beatNextStep.textContent = profile.next_step;
+      beatProfile.style.display = 'block';
+    }
+
+    function showFeedbackSection(profileId) {
+      currentProfileId = profileId;
+      feedbackSection.style.display = 'block';
+      feedbackResult.style.display = 'none';
+      // Re-enable all buttons
+      document.querySelectorAll('.feedback-btn').forEach(btn => {
+        btn.disabled = false;
+      });
+    }
+
+    async function sendFeedback(label) {
+      if (!currentProfileId) return;
+
+      document.querySelectorAll('.feedback-btn').forEach(btn => {
+        btn.disabled = true;
+      });
+
+      try {
+        const body = JSON.stringify({
+          profile_id: currentProfileId,
+          feedback: label,
+        });
+
+        const response = await fetch('http://127.0.0.1:8000/feedback', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+        });
+
+        if (!response.ok) {
+          const err = await response.json().catch(() => ({}));
+          throw new Error(err.detail || `HTTP ${response.status}`);
+        }
+
+        const displayLabels = {
+          too_light: '太轻',
+          good: '正好',
+          too_heavy: '太重',
+          too_fake: '太假',
+          more_natural: '更自然',
+        };
+        const displayLabel = displayLabels[label] || label;
+        feedbackResult.textContent = `已记录反馈：${displayLabel}（感谢你的参与！）`;
+        feedbackResult.style.display = 'block';
+        feedbackResult.style.color = 'var(--success)';
+      } catch (error) {
+        feedbackResult.textContent = `反馈提交失败：${error.message}`;
+        feedbackResult.style.display = 'block';
+        feedbackResult.style.color = 'var(--danger)';
+        // Re-enable buttons on failure
+        document.querySelectorAll('.feedback-btn').forEach(btn => {
+          btn.disabled = false;
+        });
+        console.error('Feedback submission error:', error);
+      }
+    }
+
+    feedbackButtons.addEventListener('click', (event) => {
+      const btn = event.target.closest('.feedback-btn');
+      if (!btn || btn.disabled) return;
+      const label = btn.dataset.label;
+      if (label) sendFeedback(label);
+    });
 
     function resetPitchDisplay() {
       lastPitchResult = null;
@@ -1696,6 +1833,9 @@
       backendAudioPlayer.style.display = 'none';
       backendSettings.style.display = 'none';
       autotuneProfile.style.display = 'none';
+      beatProfile.style.display = 'none';
+      feedbackSection.style.display = 'none';
+      currentProfileId = null;
       backendStatus.textContent = statusText;
     }
 
@@ -1777,6 +1917,21 @@
           } catch (error) {
             console.error('Failed to parse X-Autotune-Profile:', error);
           }
+        }
+
+        const beatHeader = response.headers.get('X-Beat-Generation-Profile');
+        if (beatHeader) {
+          try {
+            const beatProfileData = JSON.parse(decodeURIComponent(beatHeader));
+            displayBeatProfile(beatProfileData);
+          } catch (error) {
+            console.error('Failed to parse X-Beat-Generation-Profile:', error);
+          }
+        }
+
+        const profileId = response.headers.get('X-Profile-Id');
+        if (profileId) {
+          showFeedbackSection(profileId);
         }
       } catch (error) {
         backendStatus.textContent = '后端不可用';

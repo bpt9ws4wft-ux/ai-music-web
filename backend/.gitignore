@@ -1,5 +1,6 @@
 venv/
 uploads/
 processed/
+feedback/
 __pycache__/
 *.pyc
