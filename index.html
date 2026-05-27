@@ -423,7 +423,54 @@
               <small style="color:var(--muted); display:block; margin-bottom:6px;">后端收到的处理参数（参数同步，尚未执行真实 Auto-Tune）</small>
               <div id="backendSettingsText" style="font-size:14px; color:var(--text);"></div>
             </div>
-            <p class="section-copy" style="margin-top: 12px; margin-bottom: 0;">v2.5：参数已同步至后端，后端暂做原样转码返回，尚未执行真实 Auto-Tune 或 Beat 生成。</p>
+            <div id="autotuneProfile" style="display:none; margin-top:12px; padding:12px; border-radius:12px; background:linear-gradient(180deg, rgba(139,92,246,0.10), rgba(34,211,238,0.05)); border:1px solid rgba(139,92,246,0.18);">
+              <small style="color:var(--accent); display:block; margin-bottom:8px; font-weight:700;">智能 Auto-Tune 配置（已生成引擎参数，尚未执行真实音高校正）</small>
+              <div style="display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:8px;">
+                <div style="padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
+                  <small style="color:var(--muted); display:block; font-size:11px;">风格模式</small>
+                  <div id="profileStyleMode" style="font-size:14px; font-weight:700; color:var(--accent-2);">--</div>
+                </div>
+                <div style="padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
+                  <small style="color:var(--muted); display:block; font-size:11px;">Retune Speed</small>
+                  <div id="profileRetuneSpeed" style="font-size:14px; font-weight:700; color:var(--text);">--</div>
+                </div>
+                <div style="padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
+                  <small style="color:var(--muted); display:block; font-size:11px;">修正强度</small>
+                  <div id="profileCorrection" style="font-size:14px; font-weight:700; color:var(--text);">--</div>
+                </div>
+                <div style="padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
+                  <small style="color:var(--muted); display:block; font-size:11px;">Humanize</small>
+                  <div id="profileHumanize" style="font-size:14px; font-weight:700; color:var(--text);">--</div>
+                </div>
+                <div style="padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
+                  <small style="color:var(--muted); display:block; font-size:11px;">Formant Preserve</small>
+                  <div id="profileFormant" style="font-size:14px; font-weight:700; color:var(--text);">--</div>
+                </div>
+                <div style="padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
+                  <small style="color:var(--muted); display:block; font-size:11px;">Vibrato Preserve</small>
+                  <div id="profileVibrato" style="font-size:14px; font-weight:700; color:var(--text);">--</div>
+                </div>
+              </div>
+              <div style="margin-top:8px; display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:8px;">
+                <div style="padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
+                  <small style="color:var(--muted); display:block; font-size:11px;">目标调性 / 音阶</small>
+                  <div id="profileKeyScale" style="font-size:13px; font-weight:700; color:var(--text);">--</div>
+                </div>
+                <div style="padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
+                  <small style="color:var(--muted); display:block; font-size:11px;">人声质量</small>
+                  <div id="profileQuality" style="font-size:13px; font-weight:700; color:var(--text);">--</div>
+                </div>
+              </div>
+              <div style="margin-top:8px; padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
+                <small style="color:var(--muted); display:block; font-size:11px; margin-bottom:4px;">适配理由</small>
+                <div id="profileReason" style="font-size:13px; color:var(--text); line-height:1.6;">--</div>
+              </div>
+              <div style="margin-top:8px; padding:8px 10px; border-radius:8px; background:rgba(34,211,238,0.06); border:1px solid rgba(34,211,238,0.12);">
+                <small style="color:var(--accent-2); display:block; font-size:11px; margin-bottom:4px;">下一步建议</small>
+                <div id="profileNextStep" style="font-size:13px; color:var(--text); line-height:1.6;">--</div>
+              </div>
+            </div>
+            <p class="section-copy" style="margin-top: 12px; margin-bottom: 0;">v2.5：已生成 Auto-Tune 引擎参数（retune_speed / humanize / formant_preserve 等），尚未执行真实音高校正或 Beat 生成。</p>
           </div>
         </div>
 
@@ -783,6 +830,17 @@
 
     const backendSettings = document.getElementById('backendSettings');
     const backendSettingsText = document.getElementById('backendSettingsText');
+    const autotuneProfile = document.getElementById('autotuneProfile');
+    const profileStyleMode = document.getElementById('profileStyleMode');
+    const profileRetuneSpeed = document.getElementById('profileRetuneSpeed');
+    const profileCorrection = document.getElementById('profileCorrection');
+    const profileHumanize = document.getElementById('profileHumanize');
+    const profileFormant = document.getElementById('profileFormant');
+    const profileVibrato = document.getElementById('profileVibrato');
+    const profileKeyScale = document.getElementById('profileKeyScale');
+    const profileQuality = document.getElementById('profileQuality');
+    const profileReason = document.getElementById('profileReason');
+    const profileNextStep = document.getElementById('profileNextStep');
     const recordAudioPlayer = document.getElementById('recordAudioPlayer');
     const recordPreviewLabel = document.getElementById('recordPreviewLabel');
     const recordStatusBadge = document.getElementById('recordStatusBadge');
@@ -978,6 +1036,20 @@
       ];
       backendSettingsText.textContent = lines.join(' · ');
       backendSettings.style.display = 'block';
+    }
+
+    function displayAutotuneProfile(profile) {
+      profileStyleMode.textContent = profile.style_mode_label;
+      profileRetuneSpeed.textContent = profile.retune_speed;
+      profileCorrection.textContent = `${profile.correction_amount}%`;
+      profileHumanize.textContent = profile.humanize;
+      profileFormant.textContent = profile.formant_preserve;
+      profileVibrato.textContent = profile.vibrato_preserve;
+      profileKeyScale.textContent = `${profile.target_key} ${profile.target_scale_label}`;
+      profileQuality.textContent = profile.vocal_quality;
+      profileReason.textContent = profile.reason;
+      profileNextStep.textContent = profile.next_step;
+      autotuneProfile.style.display = 'block';
     }
 
     function resetPitchDisplay() {
@@ -1623,6 +1695,7 @@
       backendAudioPlayer.removeAttribute('src');
       backendAudioPlayer.style.display = 'none';
       backendSettings.style.display = 'none';
+      autotuneProfile.style.display = 'none';
       backendStatus.textContent = statusText;
     }
 
@@ -1693,6 +1766,16 @@
             displayProcessingSettings(settings);
           } catch (error) {
             console.error('Failed to parse X-Processing-Settings:', error);
+          }
+        }
+
+        const recHeader = response.headers.get('X-Autotune-Profile');
+        if (recHeader) {
+          try {
+            const profile = JSON.parse(decodeURIComponent(recHeader));
+            displayAutotuneProfile(profile);
+          } catch (error) {
+            console.error('Failed to parse X-Autotune-Profile:', error);
           }
         }
       } catch (error) {

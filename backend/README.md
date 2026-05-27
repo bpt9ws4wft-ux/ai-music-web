@@ -1,9 +1,10 @@
-# AI Music Web Backend v2.3
+# AI Music Web Backend v2.5
 
-This backend accepts any supported audio file, converts it to a
-normalised WAV (16-bit, 44.1 kHz, mono), and returns it with audio
-analysis in the response headers.  It is the foundation that future
-Auto-Tune, beat generation, mixing, and export features will build on.
+Converts any supported audio file to a normalised WAV (16-bit, 44.1 kHz,
+mono) and returns audio analysis, parameter sync, and an engine-ready
+Auto-Tune profile with retune_speed, humanize, formant_preserve, and
+vibrato_preserve — all derived from measured audio quality and user intent.
+No real pitch correction yet; the profile is ready to feed a future engine.
 
 ## Prerequisites
 
@@ -95,6 +96,70 @@ curl -v -X POST http://127.0.0.1:8000/process-vocal \
   -F "file=@your-vocal.mp3" \
   -o converted.wav
 ```
+
+### Processing Settings (v2.5)
+
+The `/process-vocal` endpoint also accepts optional form fields that are
+echoed back in the `X-Processing-Settings` header (URL-encoded JSON):
+
+| Form Field | Default | Description |
+|---|---|---|
+| `autotune_strength` | `40` | Auto-Tune intensity (0–100) |
+| `key` | `C` | Root key (C–B) |
+| `scale` | `major` | Scale type (`major` or `minor`) |
+| `beat_style` | `清爽电子` | Selected beat style |
+
+Example with all parameters:
+
+```bash
+curl -v -X POST http://127.0.0.1:8000/process-vocal \
+  -F "file=@your-vocal.mp3" \
+  -F "autotune_strength=60" \
+  -F "key=D" \
+  -F "scale=minor" \
+  -F "beat_style=沉浸 Trap" \
+  -o converted.wav
+```
+
+The `X-Processing-Settings` response header will contain a URL-encoded
+JSON object mirroring the received parameters.  **This is parameter sync
+only — the backend does not yet apply real Auto-Tune or generate beats.**
+
+### Auto-Tune Profile Header (v2.5)
+
+The response also includes `X-Autotune-Profile`, a URL-encoded JSON object
+with engine-ready parameters derived from audio analysis and user settings:
+
+| Field | Example | Description |
+|---|---|---|
+| `style_mode` | `pop` | `natural` / `pop` / `rnb` / `trap` / `robotic` |
+| `style_mode_label` | `流行` | Chinese label for the style |
+| `retune_speed` | `55` | 0–100, higher = faster pitch snap |
+| `correction_amount` | `70` | 0–100, how much correction to apply |
+| `humanize` | `50` | 0–100, timing jitter for natural feel |
+| `formant_preserve` | `70` | 0–100, keep original vocal character |
+| `vibrato_preserve` | `60` | 0–100, keep natural vibrato |
+| `target_key` | `C` | Target root key |
+| `target_scale` | `major` | Target scale |
+| `target_scale_label` | `大调` | Chinese label for the scale |
+| `vocal_quality` | `正常` | Quality assessment |
+| `reason` | (string) | Why these parameters were chosen |
+| `next_step` | (string) | Suggested next action for the user |
+
+### Style Mode Mapping
+
+| Strength | Default Mode | Characteristics |
+|---|---|---|
+| < 30 | `natural` | Slow retune, high humanize, max vibrato/formant preserve |
+| 30–59 | `pop` | Medium retune, balanced humanize |
+| 60–80 | `trap` | Fast retune, high correction, low humanize |
+| > 80 | `robotic` | Very fast retune, minimal humanize/formant/vibrato |
+
+Minor scale increases humanize (+10).  Minor + R&B/Trap beat further
+increases vibrato preserve (+15).
+
+**No real pitch correction is applied** — these are engine-ready parameters
+that a future pyworld + formant shifter pipeline can consume directly.
 
 ## API
 
