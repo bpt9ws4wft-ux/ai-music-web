@@ -538,14 +538,30 @@
               <div class="preview-value" id="analysisDuration">--</div>
             </div>
             <div class="preview-label">
-              <small>峰值</small>
+              <small>采样率</small>
+              <div class="preview-value" id="analysisSampleRate">--</div>
+            </div>
+            <div class="preview-label">
+              <small>声道数</small>
+              <div class="preview-value" id="analysisChannels">--</div>
+            </div>
+            <div class="preview-label">
+              <small>峰值音量 (dBFS)</small>
               <div class="preview-value" id="analysisPeak">--</div>
             </div>
             <div class="preview-label">
-              <small>平均音量</small>
+              <small>平均响度 (dBFS)</small>
               <div class="preview-value" id="analysisAverage">--</div>
             </div>
             <div class="preview-label">
+              <small>音量过低</small>
+              <div class="preview-value" id="analysisTooQuiet">--</div>
+            </div>
+            <div class="preview-label">
+              <small>爆音风险</small>
+              <div class="preview-value" id="analysisClippedRisk">--</div>
+            </div>
+            <div class="preview-label" style="grid-column: span 2;">
               <small>提示</small>
               <div class="preview-value" id="analysisHintText">等待音频</div>
             </div>
@@ -728,6 +744,10 @@
     const analysisAverage = document.getElementById('analysisAverage');
     const analysisHintText = document.getElementById('analysisHintText');
     const analysisState = document.getElementById('analysisState');
+    const analysisSampleRate = document.getElementById('analysisSampleRate');
+    const analysisChannels = document.getElementById('analysisChannels');
+    const analysisTooQuiet = document.getElementById('analysisTooQuiet');
+    const analysisClippedRisk = document.getElementById('analysisClippedRisk');
     const pitchFrequency = document.getElementById('pitchFrequency');
     const pitchNote = document.getElementById('pitchNote');
     const pitchConfidence = document.getElementById('pitchConfidence');
@@ -886,7 +906,6 @@
       let peak = 0;
       let sum = 0;
 
-      // 这里用绝对值来估算峰值与平均音量，便于新手理解。
       for (let i = 0; i < channelData.length; i += 1) {
         const current = Math.abs(channelData[i]);
         if (current > peak) {
@@ -896,17 +915,50 @@
       }
 
       const average = channelData.length ? sum / channelData.length : 0;
-      analysisDuration.textContent = formatDuration(audioBuffer.duration);
-      analysisPeak.textContent = formatLevel(peak);
-      analysisAverage.textContent = formatLevel(average);
-      analysisState.textContent = '已分析';
 
-      if (peak >= 0.9) {
-        analysisHintText.textContent = '峰值较高，可能接近爆音。';
-      } else if (average < 0.03) {
-        analysisHintText.textContent = '平均音量偏低，建议提高音量。';
+      // 转换为近似 dBFS（20 * log10），避免除以 1 得到 -Infinity。
+      const peakDBFS = peak > 0 ? (20 * Math.log10(peak)).toFixed(2) : '-∞';
+      const avgDBFS = average > 0 ? (20 * Math.log10(average)).toFixed(2) : '-∞';
+      const tooQuiet = average > 0 && 20 * Math.log10(average) < -35;
+      const clippedRisk = peak > 0 && 20 * Math.log10(peak) > -1;
+
+      analysisDuration.textContent = formatDuration(audioBuffer.duration);
+      analysisSampleRate.textContent = `${audioBuffer.sampleRate} Hz`;
+      analysisChannels.textContent = audioBuffer.numberOfChannels;
+      analysisPeak.textContent = `${peakDBFS} dBFS`;
+      analysisAverage.textContent = `${avgDBFS} dBFS`;
+      analysisTooQuiet.textContent = tooQuiet ? '是' : '否';
+      analysisClippedRisk.textContent = clippedRisk ? '是' : '否';
+      analysisState.textContent = '浏览器分析';
+
+      if (clippedRisk) {
+        analysisHintText.textContent = '峰值接近 0 dBFS，可能存在爆音，建议降低输入增益。';
+      } else if (tooQuiet) {
+        analysisHintText.textContent = '平均响度偏低，建议提高录制音量或靠近麦克风。';
       } else {
         analysisHintText.textContent = '音量正常，可继续预览。';
+      }
+    }
+
+    function displayBackendAnalysis(analysis) {
+      const tooQuiet = analysis.average_dbfs < -35;
+      const clippedRisk = analysis.peak_dbfs > -1;
+
+      analysisDuration.textContent = `${analysis.duration_seconds} 秒`;
+      analysisSampleRate.textContent = `${analysis.sample_rate} Hz`;
+      analysisChannels.textContent = analysis.channels;
+      analysisPeak.textContent = `${analysis.peak_dbfs} dBFS`;
+      analysisAverage.textContent = `${analysis.average_dbfs} dBFS`;
+      analysisTooQuiet.textContent = tooQuiet ? '是' : '否';
+      analysisClippedRisk.textContent = clippedRisk ? '是' : '否';
+      analysisState.textContent = '后端已分析';
+
+      if (clippedRisk) {
+        analysisHintText.textContent = '峰值接近 0 dBFS，存在爆音风险，建议降低输入增益。';
+      } else if (tooQuiet) {
+        analysisHintText.textContent = '平均响度偏低（< −35 dBFS），建议提高录制音量。';
+      } else {
+        analysisHintText.textContent = '音频质量正常，可继续处理。';
       }
     }
 
@@ -1518,8 +1570,12 @@
       } catch (error) {
         clearWaveform();
         analysisDuration.textContent = '--';
+        analysisSampleRate.textContent = '--';
+        analysisChannels.textContent = '--';
         analysisPeak.textContent = '--';
         analysisAverage.textContent = '--';
+        analysisTooQuiet.textContent = '--';
+        analysisClippedRisk.textContent = '--';
         analysisHintText.textContent = '等待音频';
         analysisState.textContent = '等待分析';
         resetPitchDisplay();
@@ -1591,6 +1647,21 @@
         backendAudioPlayer.style.display = 'block';
         backendAudioPlayer.load();
         backendStatus.textContent = '已返回';
+
+        const analysisHeader = response.headers.get('X-Audio-Analysis');
+        if (analysisHeader) {
+          try {
+            const analysis = JSON.parse(decodeURIComponent(analysisHeader));
+            displayBackendAnalysis(analysis);
+          } catch (error) {
+            analysisState.textContent = '解析失败';
+            analysisHintText.textContent = '未收到后端分析数据';
+            console.error('Failed to parse X-Audio-Analysis:', error);
+          }
+        } else {
+          analysisState.textContent = '无数据';
+          analysisHintText.textContent = '未收到后端分析数据';
+        }
       } catch (error) {
         backendStatus.textContent = '后端不可用';
         console.error(error);
@@ -1643,8 +1714,12 @@
         currentObjectUrl = null;
         clearWaveform();
         analysisDuration.textContent = '--';
+        analysisSampleRate.textContent = '--';
+        analysisChannels.textContent = '--';
         analysisPeak.textContent = '--';
         analysisAverage.textContent = '--';
+        analysisTooQuiet.textContent = '--';
+        analysisClippedRisk.textContent = '--';
         analysisHintText.textContent = '等待音频';
         analysisState.textContent = '等待分析';
         resetPitchDisplay();
@@ -1660,8 +1735,12 @@
         audioPlayer.style.display = 'none';
         clearWaveform();
         analysisDuration.textContent = '--';
+        analysisSampleRate.textContent = '--';
+        analysisChannels.textContent = '--';
         analysisPeak.textContent = '--';
         analysisAverage.textContent = '--';
+        analysisTooQuiet.textContent = '--';
+        analysisClippedRisk.textContent = '--';
         analysisHintText.textContent = '等待音频';
         analysisState.textContent = '等待分析';
         resetPitchDisplay();
