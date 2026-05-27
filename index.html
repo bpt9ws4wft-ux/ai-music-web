@@ -419,7 +419,11 @@
               <span id="backendStatus">等待上传</span>
             </div>
             <audio id="backendAudioPlayer" class="audio-player" controls preload="metadata"></audio>
-            <p class="section-copy" style="margin-top: 12px; margin-bottom: 0;">本地 FastAPI 后端返回的音频。当前 v2.1 只做原样返回，未来会替换为真实 Auto-Tune。</p>
+            <div id="backendSettings" style="display:none; margin-top:12px; padding:10px 12px; border-radius:10px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.04);">
+              <small style="color:var(--muted); display:block; margin-bottom:6px;">后端收到的处理参数（参数同步，尚未执行真实 Auto-Tune）</small>
+              <div id="backendSettingsText" style="font-size:14px; color:var(--text);"></div>
+            </div>
+            <p class="section-copy" style="margin-top: 12px; margin-bottom: 0;">v2.5：参数已同步至后端，后端暂做原样转码返回，尚未执行真实 Auto-Tune 或 Beat 生成。</p>
           </div>
         </div>
 
@@ -777,6 +781,8 @@
     const stopBeatBtn = document.getElementById('stopBeatBtn');
     const beatPreviewHint = document.getElementById('beatPreviewHint');
 
+    const backendSettings = document.getElementById('backendSettings');
+    const backendSettingsText = document.getElementById('backendSettingsText');
     const recordAudioPlayer = document.getElementById('recordAudioPlayer');
     const recordPreviewLabel = document.getElementById('recordPreviewLabel');
     const recordStatusBadge = document.getElementById('recordStatusBadge');
@@ -960,6 +966,18 @@
       } else {
         analysisHintText.textContent = '音频质量正常，可继续处理。';
       }
+    }
+
+    function displayProcessingSettings(settings) {
+      const scaleLabel = settings.scale === 'minor' ? '小调' : '大调';
+      const lines = [
+        `Auto-Tune 强度: ${settings.autotune_strength}%`,
+        `调性: ${settings.key}`,
+        `音阶: ${scaleLabel}`,
+        `Beat 风格: ${settings.beat_style}`,
+      ];
+      backendSettingsText.textContent = lines.join(' · ');
+      backendSettings.style.display = 'block';
     }
 
     function resetPitchDisplay() {
@@ -1604,6 +1622,7 @@
       releaseBackendUrl();
       backendAudioPlayer.removeAttribute('src');
       backendAudioPlayer.style.display = 'none';
+      backendSettings.style.display = 'none';
       backendStatus.textContent = statusText;
     }
 
@@ -1615,6 +1634,10 @@
 
       const formData = new FormData();
       formData.append('file', selectedUploadFile);
+      formData.append('autotune_strength', String(tuneSlider.value));
+      formData.append('key', keySelect.value);
+      formData.append('scale', modeSelect.value);
+      formData.append('beat_style', selectedBeat);
 
       backendProcessBtn.disabled = true;
       backendProcessBtn.textContent = '处理中...';
@@ -1661,6 +1684,16 @@
         } else {
           analysisState.textContent = '无数据';
           analysisHintText.textContent = '未收到后端分析数据';
+        }
+
+        const settingsHeader = response.headers.get('X-Processing-Settings');
+        if (settingsHeader) {
+          try {
+            const settings = JSON.parse(decodeURIComponent(settingsHeader));
+            displayProcessingSettings(settings);
+          } catch (error) {
+            console.error('Failed to parse X-Processing-Settings:', error);
+          }
         }
       } catch (error) {
         backendStatus.textContent = '后端不可用';
