@@ -1,9 +1,9 @@
-# AI Music Web Backend v2.2
+# AI Music Web Backend v2.3
 
 This backend accepts any supported audio file, converts it to a
-normalised WAV (16-bit, 44.1 kHz, mono), and returns it.  It is the
-foundation that future Auto-Tune, beat generation, mixing, and export
-features will build on.
+normalised WAV (16-bit, 44.1 kHz, mono), and returns it with audio
+analysis in the response headers.  It is the foundation that future
+Auto-Tune, beat generation, mixing, and export features will build on.
 
 ## Prerequisites
 
@@ -73,6 +73,29 @@ curl -X POST http://127.0.0.1:8000/process-vocal \
 
 The downloaded `converted.wav` will be a 16-bit 44.1 kHz mono WAV.
 
+### Audio Analysis Response Headers
+
+The `/process-vocal` response includes these custom headers with analysis
+data measured from the **original** uploaded audio (before conversion):
+
+| Header | Example | Meaning |
+|---|---|---|
+| `X-Duration-Seconds` | `3.52` | Length in seconds |
+| `X-Sample-Rate` | `44100` | Original sample rate (Hz) |
+| `X-Channels` | `2` | Original channel count |
+| `X-Peak-dBFS` | `-1.23` | Highest sample level |
+| `X-Average-dBFS` | `-18.45` | RMS loudness |
+| `X-Too-Quiet` | `false` | `true` when average < −30 dBFS |
+| `X-Clipped-Risk` | `false` | `true` when peak > −0.3 dBFS |
+
+To see them, use `curl -v`:
+
+```bash
+curl -v -X POST http://127.0.0.1:8000/process-vocal \
+  -F "file=@your-vocal.mp3" \
+  -o converted.wav
+```
+
 ## API
 
 | Method | Path | Purpose |
@@ -90,7 +113,7 @@ The downloaded `converted.wav` will be a 16-bit 44.1 kHz mono WAV.
 ## Processing Pipeline (current & planned)
 
 ```
-Upload → [validate] → [save raw] → [convert to WAV] → return WAV
+Upload → [validate] → [save raw] → [convert to WAV] → [analyse] → return WAV + headers
                                           ↑
                                    (pydub + ffmpeg)
 ```
