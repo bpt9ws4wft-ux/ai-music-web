@@ -424,7 +424,10 @@
               <div id="backendSettingsText" style="font-size:14px; color:var(--text);"></div>
             </div>
             <div id="autotuneProfile" style="display:none; margin-top:12px; padding:12px; border-radius:12px; background:linear-gradient(180deg, rgba(139,92,246,0.10), rgba(34,211,238,0.05)); border:1px solid rgba(139,92,246,0.18);">
-              <small style="color:var(--accent); display:block; margin-bottom:8px; font-weight:700;">智能 Auto-Tune 配置（已执行基础音高校正 MVP）</small>
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <small style="color:var(--accent); font-weight:700;">智能 Auto-Tune 配置（已执行基础音高校正 MVP）</small>
+                <span id="profileMode" style="font-size:12px; padding:3px 10px; border-radius:999px; background:rgba(139,92,246,0.15); color:var(--accent); font-weight:700;">--</span>
+              </div>
               <div style="display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:8px;">
                 <div style="padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
                   <small style="color:var(--muted); display:block; font-size:11px;">风格模式</small>
@@ -459,6 +462,19 @@
                 <div style="padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
                   <small style="color:var(--muted); display:block; font-size:11px;">人声质量</small>
                   <div id="profileQuality" style="font-size:13px; font-weight:700; color:var(--text);">--</div>
+                </div>
+              </div>
+              <div style="margin-top:8px; padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
+                <small style="color:var(--muted); display:block; font-size:11px; margin-bottom:4px;">适配来源</small>
+                <div id="profileAdaptationSummary" style="font-size:13px; font-weight:700; color:var(--accent-2);">--</div>
+              </div>
+              <div id="profileBackingDetails" style="display:none; margin-top:8px; padding:8px 10px; border-radius:8px; background:rgba(34,211,238,0.05); border:1px solid rgba(34,211,238,0.10);">
+                <small style="color:var(--accent-2); display:block; font-size:11px; margin-bottom:6px;">伴奏特征</small>
+                <div style="display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:6px;">
+                  <div><small style="color:var(--muted); font-size:10px;">风格</small><div id="backingDetailStyle" style="font-size:12px; color:var(--text);">--</div></div>
+                  <div><small style="color:var(--muted); font-size:10px;">能量</small><div id="backingDetailEnergy" style="font-size:12px; color:var(--text);">--</div></div>
+                  <div><small style="color:var(--muted); font-size:10px;">低频</small><div id="backingDetailBass" style="font-size:12px; color:var(--text);">--</div></div>
+                  <div><small style="color:var(--muted); font-size:10px;">明亮度</small><div id="backingDetailBrightness" style="font-size:12px; color:var(--text);">--</div></div>
                 </div>
               </div>
               <div style="margin-top:8px; padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
@@ -499,6 +515,10 @@
                 </div>
               </div>
               <div style="margin-top:8px; padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
+                <small style="color:var(--muted); display:block; font-size:11px; margin-bottom:4px;">人声匹配</small>
+                <div id="beatVocalMatch" style="font-size:13px; color:var(--text); line-height:1.6;">--</div>
+              </div>
+              <div style="margin-top:8px; padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
                 <small style="color:var(--muted); display:block; font-size:11px; margin-bottom:4px;">匹配理由</small>
                 <div id="beatMatchReason" style="font-size:13px; color:var(--text); line-height:1.6;">--</div>
               </div>
@@ -518,7 +538,7 @@
               </div>
               <small id="feedbackResult" style="display:none; margin-top:8px; color:var(--success);"></small>
             </div>
-            <p class="section-copy" style="margin-top: 12px; margin-bottom: 0;">v2.6.3：已执行基础音高校正 MVP + 智能 Beat 生成参数方案 + 反馈学习系统。</p>
+            <p class="section-copy" style="margin-top: 12px; margin-bottom: 0;">v2.8：已执行基础音高校正 MVP + 伴奏驱动 Auto-Tune 适配 + 自动/手动双模 + 智能 Beat Profile 生成器。</p>
           </div>
         </div>
 
@@ -541,14 +561,60 @@
 
         <div style="margin-top: 18px;">
           <h2 class="section-title">Auto-Tune 强度</h2>
-          <p class="section-copy">滑动参数时，结果预览会同步更新说明文字。</p>
+          <p class="section-copy">选择"手动强度"自行控制，或"自动适配"让系统根据音频分析选择最佳参数。</p>
+          <div style="display:flex; gap:8px; margin-bottom:12px;" id="autotuneModeToggle">
+            <button class="btn btn-secondary autotune-mode-btn active" data-mode="manual" style="font-size:13px; padding:8px 16px;">手动强度</button>
+            <button class="btn btn-secondary autotune-mode-btn" data-mode="auto" style="font-size:13px; padding:8px 16px;">自动适配</button>
+          </div>
           <div class="meter">
             <div class="meter-title">
-              <span>强度</span>
+              <span id="tuneSliderLabel">强度</span>
               <span id="tuneValue">40%</span>
             </div>
             <input id="tuneSlider" type="range" min="0" max="100" value="40">
             <div class="meter-description" id="tuneDescription">自然修正：保留人声质感。</div>
+          </div>
+        </div>
+
+        <div style="margin-top: 18px;">
+          <h2 class="section-title">上传伴奏（可选）</h2>
+          <p class="section-copy">上传伴奏/编曲文件，系统自动分析音乐特征并驱动 Auto-Tune 适配。</p>
+          <div class="upload-drop">
+            <input class="file-input" id="beatInput" type="file" accept="audio/*" style="margin-bottom:10px;">
+            <div id="beatUploadMeta" style="font-size:13px; color:var(--muted);">尚未选择伴奏文件。</div>
+            <div class="button-row" style="margin-top:8px;">
+              <button class="btn btn-ghost" id="beatAnalyzeBtn" type="button" disabled>分析伴奏</button>
+            </div>
+            <div id="beatAnalysisResult" style="display:none; margin-top:12px; padding:12px; border-radius:12px; background:linear-gradient(180deg, rgba(34,211,238,0.06), rgba(139,92,246,0.04)); border:1px solid rgba(34,211,238,0.14);">
+              <small style="color:var(--accent-2); display:block; margin-bottom:8px; font-weight:700;">伴奏分析结果（用于自动适配 Auto-Tune）</small>
+              <div style="display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:8px;">
+                <div style="padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
+                  <small style="color:var(--muted); display:block; font-size:11px;">预估 BPM</small>
+                  <div id="beatBpm" style="font-size:14px; font-weight:700; color:var(--accent-2);">--</div>
+                </div>
+                <div style="padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
+                  <small style="color:var(--muted); display:block; font-size:11px;">能量</small>
+                  <div id="beatEnergy" style="font-size:14px; font-weight:700; color:var(--text);">--</div>
+                </div>
+                <div style="padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
+                  <small style="color:var(--muted); display:block; font-size:11px;">低频</small>
+                  <div id="beatBass" style="font-size:14px; font-weight:700; color:var(--text);">--</div>
+                </div>
+                <div style="padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
+                  <small style="color:var(--muted); display:block; font-size:11px;">明亮度</small>
+                  <div id="beatBrightness" style="font-size:14px; font-weight:700; color:var(--text);">--</div>
+                </div>
+                <div style="padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
+                  <small style="color:var(--muted); display:block; font-size:11px;">推荐风格</small>
+                  <div id="beatSuggestedStyle" style="font-size:13px; font-weight:700; color:var(--accent-2);">--</div>
+                </div>
+                <div style="padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
+                  <small style="color:var(--muted); display:block; font-size:11px;">检测调性</small>
+                  <div id="beatSuggestedKey" style="font-size:14px; font-weight:700; color:var(--text);">unknown</div>
+                </div>
+              </div>
+              <small id="beatAnalysisNote" style="display:block; margin-top:8px; color:var(--accent-2); font-size:12px;">伴奏分析将用于自动适配模式下的 Auto-Tune 参数生成。</small>
+            </div>
           </div>
         </div>
 
@@ -879,6 +945,7 @@
     const backendSettings = document.getElementById('backendSettings');
     const backendSettingsText = document.getElementById('backendSettingsText');
     const autotuneProfile = document.getElementById('autotuneProfile');
+    const profileMode = document.getElementById('profileMode');
     const profileStyleMode = document.getElementById('profileStyleMode');
     const profileRetuneSpeed = document.getElementById('profileRetuneSpeed');
     const profileCorrection = document.getElementById('profileCorrection');
@@ -889,6 +956,12 @@
     const profileQuality = document.getElementById('profileQuality');
     const profileReason = document.getElementById('profileReason');
     const profileNextStep = document.getElementById('profileNextStep');
+    const profileAdaptationSummary = document.getElementById('profileAdaptationSummary');
+    const profileBackingDetails = document.getElementById('profileBackingDetails');
+    const backingDetailStyle = document.getElementById('backingDetailStyle');
+    const backingDetailEnergy = document.getElementById('backingDetailEnergy');
+    const backingDetailBass = document.getElementById('backingDetailBass');
+    const backingDetailBrightness = document.getElementById('backingDetailBrightness');
     const beatProfile = document.getElementById('beatProfile');
     const beatTargetBpm = document.getElementById('beatTargetBpm');
     const beatGrooveType = document.getElementById('beatGrooveType');
@@ -896,17 +969,35 @@
     const beatBassIntensity = document.getElementById('beatBassIntensity');
     const beatChords = document.getElementById('beatChords');
     const beatArrangement = document.getElementById('beatArrangement');
+    const beatVocalMatch = document.getElementById('beatVocalMatch');
     const beatMatchReason = document.getElementById('beatMatchReason');
     const beatNextStep = document.getElementById('beatNextStep');
     const feedbackSection = document.getElementById('feedbackSection');
     const feedbackButtons = document.getElementById('feedbackButtons');
     const feedbackResult = document.getElementById('feedbackResult');
+    const tuneSliderLabel = document.getElementById('tuneSliderLabel');
+    const autotuneModeBtns = document.querySelectorAll('.autotune-mode-btn');
+    const beatInput = document.getElementById('beatInput');
+    const beatUploadMeta = document.getElementById('beatUploadMeta');
+    const beatAnalyzeBtn = document.getElementById('beatAnalyzeBtn');
+    const beatAnalysisResult = document.getElementById('beatAnalysisResult');
+    const beatBpm = document.getElementById('beatBpm');
+    const beatEnergy = document.getElementById('beatEnergy');
+    const beatBass = document.getElementById('beatBass');
+    const beatBrightness = document.getElementById('beatBrightness');
+    const beatSuggestedStyle = document.getElementById('beatSuggestedStyle');
+    const beatSuggestedKey = document.getElementById('beatSuggestedKey');
+    const beatAnalysisNote = document.getElementById('beatAnalysisNote');
     const recordAudioPlayer = document.getElementById('recordAudioPlayer');
     const recordPreviewLabel = document.getElementById('recordPreviewLabel');
     const recordStatusBadge = document.getElementById('recordStatusBadge');
     const recordHint = document.getElementById('recordHint');
 
     let selectedBeat = '清爽电子';
+    let autotuneMode = 'manual';  // "manual" | "auto"
+    let currentBeatAnalysis = null;  // JSON object from /analyze-beat (legacy)
+    let currentBackingAnalysis = null;  // JSON object from /analyze-backing-track (v2.8)
+    let selectedBeatFile = null;
     let recording = false;
     let recordSeconds = 0;
     let recordTimerId = null;
@@ -1089,7 +1180,9 @@
 
     function displayProcessingSettings(settings) {
       const scaleLabel = settings.scale === 'minor' ? '小调' : '大调';
+      const modeLabel = settings.autotune_mode === 'auto' ? '自动适配' : '手动强度';
       const lines = [
+        `模式: ${modeLabel}`,
         `Auto-Tune 强度: ${settings.autotune_strength}%`,
         `调性: ${settings.key}`,
         `音阶: ${scaleLabel}`,
@@ -1100,6 +1193,12 @@
     }
 
     function displayAutotuneProfile(profile) {
+      const isAuto = profile.mode === 'auto';
+      profileMode.textContent = isAuto ? '自动适配' : '手动强度';
+      profileMode.style.background = isAuto
+        ? 'rgba(34,211,238,0.15)'
+        : 'rgba(139,92,246,0.15)';
+      profileMode.style.color = isAuto ? 'var(--accent-2)' : 'var(--accent)';
       profileStyleMode.textContent = profile.style_mode_label;
       profileRetuneSpeed.textContent = profile.retune_speed;
       profileCorrection.textContent = `${profile.correction_amount}%`;
@@ -1110,6 +1209,22 @@
       profileQuality.textContent = profile.vocal_quality;
       profileReason.textContent = profile.reason;
       profileNextStep.textContent = profile.next_step;
+      // v2.8 dual-input: adaptation source
+      profileAdaptationSummary.textContent = profile.adaptation_summary || '--';
+      // Backing details
+      const inputs = profile.adaptation_inputs;
+      const bk = inputs && inputs.backing;
+      if (bk && (bk.style || bk.energy || bk.bass || bk.brightness)) {
+        const styleLabels = { pop: '流行', trap: 'Trap', rnb: 'R&B', electronic: '电子', unknown: '未知' };
+        const brightLabels = { dark: '暗沉', balanced: '均衡', bright: '明亮' };
+        backingDetailStyle.textContent = styleLabels[bk.style] || bk.style || '--';
+        backingDetailEnergy.textContent = bk.energy || '--';
+        backingDetailBass.textContent = bk.bass || '--';
+        backingDetailBrightness.textContent = brightLabels[bk.brightness] || bk.brightness || '--';
+        profileBackingDetails.style.display = 'block';
+      } else {
+        profileBackingDetails.style.display = 'none';
+      }
       autotuneProfile.style.display = 'block';
     }
 
@@ -1120,6 +1235,7 @@
       beatBassIntensity.textContent = `${profile.bass_intensity}%`;
       beatChords.textContent = profile.chord_progression;
       beatArrangement.textContent = profile.arrangement_hint;
+      beatVocalMatch.textContent = profile.vocal_match || '--';
       beatMatchReason.textContent = profile.match_reason;
       beatNextStep.textContent = profile.next_step;
       beatProfile.style.display = 'block';
@@ -1851,6 +1967,17 @@
       formData.append('key', keySelect.value);
       formData.append('scale', modeSelect.value);
       formData.append('beat_style', selectedBeat);
+      formData.append('autotune_mode', autotuneMode);
+      if (currentBeatAnalysis) {
+        formData.append('beat_analysis', JSON.stringify(currentBeatAnalysis));
+      }
+      // v2.8 dual-input: send backing-track analysis as separate form fields.
+      if (currentBackingAnalysis) {
+        formData.append('backing_style', currentBackingAnalysis.suggested_style || '');
+        formData.append('backing_energy', currentBackingAnalysis.energy_level || '');
+        formData.append('backing_bass', currentBackingAnalysis.bass_level || '');
+        formData.append('backing_brightness', currentBackingAnalysis.brightness || '');
+      }
 
       backendProcessBtn.disabled = true;
       backendProcessBtn.textContent = '处理中...';
@@ -1919,13 +2046,13 @@
           }
         }
 
-        const beatHeader = response.headers.get('X-Beat-Generation-Profile');
+        const beatHeader = response.headers.get('X-Beat-Profile');
         if (beatHeader) {
           try {
             const beatProfileData = JSON.parse(decodeURIComponent(beatHeader));
             displayBeatProfile(beatProfileData);
           } catch (error) {
-            console.error('Failed to parse X-Beat-Generation-Profile:', error);
+            console.error('Failed to parse X-Beat-Profile:', error);
           }
         }
 
@@ -1944,6 +2071,83 @@
 
     backendProcessBtn.addEventListener('click', () => {
       processUploadedVocalWithBackend();
+    });
+
+    // ── Beat upload / analysis ──────────────────────────────────────────────
+    beatInput.addEventListener('change', (event) => {
+      const file = event.target.files[0];
+      selectedBeatFile = null;
+      currentBeatAnalysis = null;
+      currentBackingAnalysis = null;
+      beatAnalysisResult.style.display = 'none';
+      beatAnalyzeBtn.disabled = true;
+
+      if (!file) {
+        beatUploadMeta.textContent = '尚未选择伴奏文件。';
+        return;
+      }
+
+      if (!file.type.startsWith('audio/')) {
+        beatUploadMeta.textContent = '请选择有效的音频文件。';
+        return;
+      }
+
+      selectedBeatFile = file;
+      beatUploadMeta.textContent = `已选择：${file.name}（${Math.max(1, Math.round(file.size / 1024))} KB）`;
+      beatAnalyzeBtn.disabled = false;
+    });
+
+    const brightnessLabels = { dark: '暗沉', balanced: '均衡', bright: '明亮' };
+    const backingStyleLabels = { pop: '流行', trap: 'Trap', rnb: 'R&B', electronic: '电子', unknown: '未知' };
+
+    beatAnalyzeBtn.addEventListener('click', async () => {
+      if (!selectedBeatFile) return;
+
+      beatAnalyzeBtn.disabled = true;
+      beatAnalyzeBtn.textContent = '分析中…';
+      beatAnalysisResult.style.display = 'none';
+
+      try {
+        const formData = new FormData();
+        formData.append('file', selectedBeatFile);
+
+        const response = await fetch('http://127.0.0.1:8000/analyze-backing-track', {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!response.ok) {
+          let message = `分析失败：${response.status}`;
+          try {
+            const err = await response.json();
+            if (err.detail) message = err.detail;
+          } catch (_) { /* keep generic message */ }
+          throw new Error(message);
+        }
+
+        const result = await response.json();
+        currentBackingAnalysis = result;
+
+        // Display analysis results (v2.8 naming)
+        beatBpm.textContent = result.estimated_bpm > 0 ? result.estimated_bpm : '--';
+        beatEnergy.textContent = result.energy_level || '--';
+        beatBass.textContent = result.bass_level || '--';
+        beatBrightness.textContent = brightnessLabels[result.brightness] || result.brightness || '--';
+        beatSuggestedStyle.textContent = backingStyleLabels[result.suggested_style] || result.suggested_style || '--';
+        beatSuggestedKey.textContent = result.suggested_key || 'unknown';
+        const confText = result.confidence != null ? `${result.confidence}%` : '--';
+        beatAnalysisNote.textContent = `伴奏分析已就绪（置信度 ${confText}），将用于自动适配模式下的 Auto-Tune 参数生成。`;
+        beatAnalysisNote.style.color = 'var(--success)';
+        beatAnalysisResult.style.display = 'block';
+        beatUploadMeta.textContent = `已分析：${selectedBeatFile.name}`;
+      } catch (error) {
+        beatUploadMeta.textContent = `分析失败：${error.message}`;
+        currentBackingAnalysis = null;
+        console.error('Backing analysis error:', error);
+      } finally {
+        beatAnalyzeBtn.disabled = false;
+        beatAnalyzeBtn.textContent = '分析伴奏';
+      }
     });
 
     function setRecordUi(status) {
@@ -2148,13 +2352,40 @@
       }
     });
 
+    // ── Auto-Tune mode toggle ──────────────────────────────────────────────
+    autotuneModeBtns.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        autotuneModeBtns.forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+        autotuneMode = btn.dataset.mode;
+
+        if (autotuneMode === 'auto') {
+          tuneSliderLabel.textContent = '偏好参考';
+          tuneDescription.textContent = '自动适配：系统根据音频分析、曲风、调性自动选择最佳参数。';
+          tuneSlider.style.opacity = '0.6';
+        } else {
+          tuneSliderLabel.textContent = '强度';
+          tuneDescription.textContent = '手动强度：自行控制修音强度。';
+          tuneSlider.style.opacity = '1';
+        }
+      });
+    });
+
     // 滑块驱动强度说明，结果预览同步刷新。
     tuneSlider.addEventListener('input', () => {
       const value = Number(tuneSlider.value);
       tuneValue.textContent = `${value}%`;
       previewTune.textContent = `${value}%`;
 
-      if (value <= 30) {
+      if (autotuneMode === 'auto') {
+        if (value <= 30) {
+          tuneDescription.textContent = '自动适配（偏好轻修）：系统在此基础上根据音频分析选择最佳参数。';
+        } else if (value <= 70) {
+          tuneDescription.textContent = '自动适配（偏好中修）：系统在此基础上根据音频分析选择最佳参数。';
+        } else {
+          tuneDescription.textContent = '自动适配（偏好强修）：系统在此基础上根据音频分析选择最佳参数。';
+        }
+      } else if (value <= 30) {
         tuneDescription.textContent = '自然修正：保留人声质感。';
       } else if (value <= 70) {
         tuneDescription.textContent = '中性修正：兼顾稳定性与自然度。';

@@ -1,4 +1,4 @@
-# AI Music Web Backend v2.7 (with v2.6.2 preset engine)
+# AI Music Web Backend v2.8 (preset engine + auto-adaptation + beat-driven adaptation)
 
 Converts any supported audio file to a normalised WAV (16-bit, 44.1 kHz,
 mono), applies **real Auto-Tune pitch correction** using a **mainstream
@@ -106,9 +106,14 @@ echoed back in the `X-Processing-Settings` header (URL-encoded JSON):
 | Form Field | Default | Description |
 |---|---|---|
 | `autotune_strength` | `40` | Auto-Tune intensity (0–100) |
+| `autotune_mode` | `manual` | `manual` (slider-driven) or `auto` (system chooses) |
 | `key` | `C` | Root key (C–B) |
 | `scale` | `major` | Scale type (`major` or `minor`) |
 | `beat_style` | `清爽电子` | Selected beat style |
+| `backing_style` | (empty) | Backing-track style from `/analyze-backing-track` (v2.8) |
+| `backing_energy` | (empty) | Backing-track energy level (v2.8) |
+| `backing_bass` | (empty) | Backing-track bass level (v2.8) |
+| `backing_brightness` | (empty) | Backing-track brightness (v2.8) |
 
 Example with all parameters:
 
@@ -116,6 +121,7 @@ Example with all parameters:
 curl -v -X POST http://127.0.0.1:8000/process-vocal \
   -F "file=@your-vocal.mp3" \
   -F "autotune_strength=60" \
+  -F "autotune_mode=auto" \
   -F "key=D" \
   -F "scale=minor" \
   -F "beat_style=沉浸 Trap" \
@@ -133,9 +139,11 @@ and fine-tuned by audio quality analysis:
 
 | Field | Example | Description |
 |---|---|---|
+| `mode` | `auto` | `manual` or `auto` (v2.8) |
 | `preset_name` | `trap_hard` | Matched preset ID (v2.6.2) |
 | `preset_label` | `Trap 强修` | Chinese preset label |
-| `preset_source` | `mainstream_rule_preset` | Always `mainstream_rule_preset` |
+| `suitable_for` | `["Trap","Drill"]` | Genres this preset is designed for |
+| `preset_source` | `auto_adaptation` | `mainstream_rule_preset` or `auto_adaptation` |
 | `confidence` | `78` | 0–100, match confidence |
 | `style_mode` | `trap` | Legacy engine mode (`natural` / `pop` / `rnb` / `trap` / `robotic`) |
 | `style_mode_label` | `Trap` | Chinese label for the engine mode |
@@ -150,6 +158,8 @@ and fine-tuned by audio quality analysis:
 | `vocal_quality` | `normal` | Quality assessment |
 | `reason` | (string) | Why these parameters were chosen |
 | `next_step` | (string) | Suggested next action for the user |
+| `adaptation_inputs` | (object) | v2.8 dual-input: `vocal`, `style_source`, `backing` sub-fields |
+| `adaptation_summary` | (string) | v2.8: `仅人声` / `人声 + 手动曲风` / `人声 + 伴奏分析` |
 
 ### Mainstream Preset Library (v2.6.2)
 
@@ -188,44 +198,181 @@ Real pitch correction is applied — see **Processing Pipeline** below.
 The profile parameters also serve as a bridge to a future pyworld +
 formant shifter engine for higher-quality correction.
 
-### Beat-Generation Profile Header (v2.7)
+### Auto-Adaptation Mode (v2.8)
 
-The response also includes `X-Beat-Generation-Profile`, a URL-encoded JSON
+When `autotune_mode=auto`, the system ignores the slider as the primary
+matching key and instead selects the best preset autonomously:
+
+| Input | Weight | Effect |
+|---|---|---|
+| Beat style | Primary | Trap → trap_hard / melodic_rap; R&B → rnb_smooth; 电子 → mainstream_pop |
+| Scale (major/minor) | Primary | minor + Trap → trap_hard; minor + R&B → rnb_smooth; major + 电子 → mainstream_pop |
+| Audio quality | Override | too_quiet → force natural_vocal; clipped_risk → force mainstream_pop |
+| Strength slider | Nudge | High pref (> 75) + 电子 → robotic_hyperpop; Low pref (< 35) → natural_vocal |
+| Duration < 5 s | Penalty | Confidence −20, mark as draft-grade |
+
+Auto mode produces the same profile fields as manual mode, with these differences:
+- `preset_source` = `"auto_adaptation"` (vs `"mainstream_rule_preset"`)
+- `mode` = `"auto"` (vs `"manual"`)
+- `reason` is prefixed with `[自动适配]` and the matching rationale
+- `confidence` is driven by how well the beat style + scale match, not by strength distance
+
+Quality adjustments (too_quiet, clipped_risk, minor scale) apply identically in both modes.
+
+When a ``beat_analysis`` JSON (from ``/analyze-beat``) is also provided, the
+auto matcher uses the beat's detected features (BPM, energy, bass, brightness)
+to further refine retune_speed, correction_amount, humanize, formant_preserve,
+and vibrato_preserve — see **Beat-Driven Auto-Tune Refinement** above.
+
+### Beat Profile Header (v2.7)
+
+The response also includes `X-Beat-Profile`, a URL-encoded JSON
 object with Beat-generation parameters derived from audio analysis,
 Auto-Tune profile, and user-selected beat style.  **This is parameter-only —
 no Beat audio is generated yet.**
 
 | Field | Example | Description |
 |---|---|---|
-| `target_bpm` | `140` | Suggested tempo for the beat |
+| `target_bpm` | `78` | Suggested tempo for the beat |
 | `beat_style` | `沉浸 Trap` | User-selected beat style |
 | `groove_type` | `triplet_hihat` | `straight` / `swing` / `triplet_hihat` |
 | `drum_density` | `75` | 0–100, drum pattern fill level |
 | `bass_intensity` | `80` | 0–100, bass/sub-bass presence |
 | `chord_progression` | `i–VI–III–VII in C minor` | Suggested chord loop |
 | `arrangement_hint` | `前奏8 → 主歌16 …` | Section-by-section arrangement template |
+| `vocal_match` | (string) | How well the vocal profile matches this beat style |
 | `match_reason` | (string) | Why these parameters were chosen |
 | `next_step` | (string) | Suggested next action for the user |
+
+#### BPM Ranges by Style
+
+| Beat Style | BPM Range | Default |
+|---|---|---|
+| 清爽电子 | 105–124 | 115 |
+| 沉浸 Trap | 70–88 | 78 |
+| 流行节奏 | 90–112 | 100 |
+| 未来 R&B | 72–96 | 84 |
 
 #### Parameter Rules
 
 | Condition | Effect |
 |---|---|
 | `clipped_risk` | Drum density −20, bass intensity −15 — keep the beat less busy |
-| `too_quiet` | Drum density −15 — don't overwhelm weak vocals |
+| `too_quiet` | Drum density −15 — don't overwhelm weak vocals; warn in `vocal_match` |
 | `minor` scale + Trap/R&B | Bass intensity +10, drum density +5 |
-| `robotic` / `trap` Auto-Tune | Strong drums + heavy bass + synth-driven arrangement |
+| `robotic` / `trap` Auto-Tune | Harder drums + heavier bass + synth-driven arrangement |
 | `natural` / `pop` Auto-Tune | Clean rhythm + moderate bass, preserves vocal detail |
 | `correction_amount` > 80 | Extra +10 density, +8 bass — match the aggressive tuning |
+| Duration < 5 s | `vocal_match` and `next_step` warn that profile is draft-grade |
 
 ## API
 
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/health` | Check that the backend is running |
-| `POST` | `/process-vocal` | Upload → processed WAV + Auto-Tune profile + Beat-gen blueprint |
-| `POST` | `/feedback` | Submit Auto-Tune quality feedback for ML training (v2.6.3) |
+| `POST` | `/analyze-beat` | Upload beat → musical-feature analysis (legacy, Chinese labels) |
+| `POST` | `/analyze-backing-track` | Upload backing track → musical-feature analysis (v2.8, English labels + confidence) |
+| `POST` | `/process-vocal` | Upload vocal → processed WAV + Auto-Tune profile + Beat-gen blueprint |
+| `POST` | `/feedback` | Submit Auto-Tune quality feedback (v2.6.3) |
 | `DELETE` | `/uploads/{filename}` | Delete a temporary uploaded or processed file |
+
+### Beat Analysis Endpoint (v2.8)
+
+**`POST /analyze-beat`** — upload a beat/backing track to get musical features:
+
+| Field | Example | Description |
+|---|---|---|
+| `duration_seconds` | `187.34` | Length in seconds |
+| `estimated_bpm` | `78` | Librosa beat-tracker tempo estimate |
+| `energy_level` | `high` | RMS-based: `low` / `medium` / `high` |
+| `bass_level` | `high` | Sub-250 Hz ratio: `low` / `medium` / `high` |
+| `brightness` | `low` | Spectral centroid: `low` / `medium` / `high` |
+| `suggested_style` | `沉浸 Trap` | Rule-based from BPM + energy + bass + brightness |
+| `suggested_key` | `unknown` | Placeholder for future key detection |
+
+Style detection rules:
+- BPM ≥ 105 + high energy + medium/high brightness → `清爽电子`
+- BPM 70–95 + high bass → `沉浸 Trap`
+- BPM 85–110 + medium/high energy → `流行节奏`
+- BPM 60–100 + low/medium energy + low/medium brightness → `未来 R&B`
+- Fallback: bass heavy → Trap, high energy → Electronic, otherwise → Pop
+
+The result JSON can be passed as the `beat_analysis` form field to
+`/process-vocal` for beat-driven Auto-Tune adaptation.
+
+#### Beat-Driven Auto-Tune Refinement
+
+When `beat_analysis` is provided in **auto** mode, the following adjustments
+are applied on top of the normal auto-adaptation rules:
+
+| Beat Feature | Effect |
+|---|---|
+| `bass_level = high` | retune_speed +8, correction_amount +6 |
+| `bass_level = low` | retune_speed −5 |
+| `energy_level = high` | correction_amount +5 (can handle more aggressive tuning) |
+| `energy_level = low` | humanize +10, vibrato_preserve +8 (keep emotional feel) |
+| `brightness = high` | formant_preserve +8 (preserve vocal clarity) |
+| `brightness = low` | formant_preserve −10 |
+| `estimated_bpm ≥ 120` | retune_speed +3 |
+| `estimated_bpm ≤ 80` | humanize +5 |
+
+Quality overrides (too_quiet, clipped_risk) still take priority over beat-driven adjustments.
+
+### Backing-Track Analysis Endpoint (v2.8 dual-input)
+
+**`POST /analyze-backing-track`** — upload a backing track to get musical features
+with English naming conventions and a confidence score:
+
+| Field | Example | Description |
+|---|---|---|
+| `duration_seconds` | `187.34` | Length in seconds |
+| `estimated_bpm` | `78` | Librosa beat-tracker tempo estimate |
+| `energy_level` | `high` | RMS-based: `low` / `medium` / `high` |
+| `bass_level` | `high` | Sub-250 Hz ratio: `low` / `medium` / `high` |
+| `brightness` | `dark` | Spectral centroid: `dark` / `balanced` / `bright` |
+| `suggested_style` | `trap` | English: `pop` / `trap` / `rnb` / `electronic` / `unknown` |
+| `suggested_key` | `unknown` | Placeholder for future key detection |
+| `confidence` | `82` | 0–100, how well features match the detected style |
+
+Style detection rules:
+- BPM >= 105 + high energy + balanced/bright → `electronic` (confidence 78)
+- BPM 70–95 + high bass → `trap` (confidence 82)
+- BPM 85–110 + medium/high energy → `pop` (confidence 75)
+- BPM 60–100 + low/medium energy + dark/balanced → `rnb` (confidence 72)
+- Fallbacks: high bass → `trap`, high energy → `electronic`, otherwise → `unknown`
+- BPM = 0 → confidence −20
+
+Pass the result fields as separate form fields to `/process-vocal`:
+`backing_style`, `backing_energy`, `backing_bass`, `backing_brightness`.
+
+### Dual-Input Adaptation (v2.8)
+
+When backing-track fields are sent to `/process-vocal`, the Auto-Tune profile
+includes adaptation metadata describing what drove the parameter selection:
+
+**`adaptation_inputs`:**
+```json
+{
+  "vocal": "已上传人声",
+  "style_source": "伴奏分析",
+  "backing": {
+    "style": "trap",
+    "energy": "high",
+    "bass": "high",
+    "brightness": "dark"
+  }
+}
+```
+
+**`adaptation_summary`:**
+- `仅人声` — no backing or beat-style input
+- `人声 + 手动曲风` — user manually selected a beat style
+- `人声 + 伴奏分析` — backing track was analysed and drives adaptation
+
+Backing features are mapped to Chinese style names internally for the preset
+matcher, and backing-driven refinement (bass → retune/correction,
+energy → humanize, brightness → formant, BPM → retune/humanize) is applied
+identically to the beat-analysis path.
 
 ## Upload Rules
 

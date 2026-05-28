@@ -39,7 +39,7 @@ app.add_middleware(
         "X-Audio-Analysis",
         "X-Processing-Settings",
         "X-Autotune-Profile",
-        "X-Beat-Generation-Profile",
+        "X-Beat-Profile",
         "X-Profile-Id",
         "X-Processing-Status",
         "X-Duration-Seconds",
@@ -114,6 +114,195 @@ def _convert_to_wav(source_path: Path, dest_path: Path) -> dict:
         "average_dbfs": avg,
         "too_quiet": avg < -30.0,
         "clipped_risk": peak > -0.3,
+    }
+
+
+def _analyze_beat_audio(wav_path: Path) -> dict:
+    """Analyse a beat/backing-track WAV for musical features.
+
+    Returns estimated BPM, energy level, bass level, brightness, and a
+    rule-based suggested style.  Does NOT use AI — pure signal processing.
+    """
+    import librosa
+
+    y, sr = librosa.load(str(wav_path), sr=22050, mono=True)
+    duration_s = len(y) / sr
+
+    # ---- estimated BPM -------------------------------------------------------
+    try:
+        tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+        estimated_bpm = round(float(tempo))
+    except Exception:
+        logging.exception("BPM detection failed")
+        estimated_bpm = 0
+
+    # ---- RMS energy ----------------------------------------------------------
+    rms = float(np.sqrt(np.mean(y ** 2)))
+    if rms < 0.03:
+        energy_level = "low"
+    elif rms < 0.12:
+        energy_level = "medium"
+    else:
+        energy_level = "high"
+
+    # ---- bass level (energy below 250 Hz / total) ----------------------------
+    try:
+        stft = np.abs(librosa.stft(y, n_fft=2048, hop_length=512))
+        freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
+        bass_mask = freqs <= 250
+        bass_energy = float(np.sum(stft[bass_mask]))
+        total_energy = float(np.sum(stft))
+        bass_ratio = bass_energy / (total_energy + 1e-9)
+        if bass_ratio > 0.45:
+            bass_level = "high"
+        elif bass_ratio > 0.25:
+            bass_level = "medium"
+        else:
+            bass_level = "low"
+    except Exception:
+        logging.exception("Bass-level detection failed")
+        bass_level = "medium"
+
+    # ---- brightness (spectral centroid) --------------------------------------
+    try:
+        centroid = librosa.feature.spectral_centroid(y=y, sr=sr, n_fft=2048, hop_length=512)[0]
+        avg_centroid = float(np.mean(centroid))
+        if avg_centroid > 2800:
+            brightness = "high"
+        elif avg_centroid > 1400:
+            brightness = "medium"
+        else:
+            brightness = "low"
+    except Exception:
+        logging.exception("Brightness detection failed")
+        brightness = "medium"
+
+    # ---- suggested style (rule-based) ----------------------------------------
+    if estimated_bpm >= 105 and energy_level == "high" and brightness in ("medium", "high"):
+        suggested_style = "清爽电子"
+    elif estimated_bpm >= 70 and estimated_bpm <= 95 and bass_level == "high":
+        suggested_style = "沉浸 Trap"
+    elif estimated_bpm >= 85 and estimated_bpm <= 110 and energy_level in ("medium", "high"):
+        suggested_style = "流行节奏"
+    elif estimated_bpm >= 60 and estimated_bpm <= 100 and energy_level in ("low", "medium") and brightness in ("low", "medium"):
+        suggested_style = "未来 R&B"
+    elif bass_level == "high":
+        suggested_style = "沉浸 Trap"
+    elif energy_level == "high":
+        suggested_style = "清爽电子"
+    else:
+        suggested_style = "流行节奏"
+
+    return {
+        "duration_seconds": round(duration_s, 2),
+        "estimated_bpm": estimated_bpm,
+        "energy_level": energy_level,
+        "bass_level": bass_level,
+        "brightness": brightness,
+        "suggested_style": suggested_style,
+        "suggested_key": "unknown",
+    }
+
+
+def _analyze_backing_track(wav_path: Path) -> dict:
+    """Analyse a backing track WAV for musical features (v2.8 dual-input).
+
+    Returns estimated BPM, energy level, bass level, brightness using the
+    ``dark`` / ``balanced`` / ``bright`` convention, a suggested style using
+    English labels (``pop`` / ``trap`` / ``rnb`` / ``electronic`` /
+    ``unknown``), and a confidence score (0–100).  Pure signal processing —
+    no AI.
+    """
+    import librosa
+
+    y, sr = librosa.load(str(wav_path), sr=22050, mono=True)
+    duration_s = len(y) / sr
+
+    # ---- estimated BPM -------------------------------------------------------
+    try:
+        tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+        estimated_bpm = round(float(tempo))
+    except Exception:
+        logging.exception("Backing BPM detection failed")
+        estimated_bpm = 0
+
+    # ---- RMS energy ----------------------------------------------------------
+    rms = float(np.sqrt(np.mean(y ** 2)))
+    if rms < 0.03:
+        energy_level = "low"
+    elif rms < 0.12:
+        energy_level = "medium"
+    else:
+        energy_level = "high"
+
+    # ---- bass level (energy below 250 Hz / total) ----------------------------
+    try:
+        stft = np.abs(librosa.stft(y, n_fft=2048, hop_length=512))
+        freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
+        bass_mask = freqs <= 250
+        bass_energy = float(np.sum(stft[bass_mask]))
+        total_energy = float(np.sum(stft))
+        bass_ratio = bass_energy / (total_energy + 1e-9)
+        if bass_ratio > 0.45:
+            bass_level = "high"
+        elif bass_ratio > 0.25:
+            bass_level = "medium"
+        else:
+            bass_level = "low"
+    except Exception:
+        logging.exception("Backing bass-level detection failed")
+        bass_level = "medium"
+
+    # ---- brightness: dark / balanced / bright --------------------------------
+    try:
+        centroid = librosa.feature.spectral_centroid(y=y, sr=sr, n_fft=2048, hop_length=512)[0]
+        avg_centroid = float(np.mean(centroid))
+        if avg_centroid > 2800:
+            brightness = "bright"
+        elif avg_centroid > 1400:
+            brightness = "balanced"
+        else:
+            brightness = "dark"
+    except Exception:
+        logging.exception("Backing brightness detection failed")
+        brightness = "balanced"
+
+    # ---- suggested style (English labels) + confidence -----------------------
+    confidence = 50
+    if estimated_bpm >= 105 and energy_level == "high" and brightness in ("balanced", "bright"):
+        suggested_style = "electronic"
+        confidence = 78
+    elif estimated_bpm >= 70 and estimated_bpm <= 95 and bass_level == "high":
+        suggested_style = "trap"
+        confidence = 82
+    elif estimated_bpm >= 85 and estimated_bpm <= 110 and energy_level in ("medium", "high"):
+        suggested_style = "pop"
+        confidence = 75
+    elif estimated_bpm >= 60 and estimated_bpm <= 100 and energy_level in ("low", "medium") and brightness in ("dark", "balanced"):
+        suggested_style = "rnb"
+        confidence = 72
+    elif bass_level == "high":
+        suggested_style = "trap"
+        confidence = 55
+    elif energy_level == "high":
+        suggested_style = "electronic"
+        confidence = 55
+    else:
+        suggested_style = "unknown"
+        confidence = 40
+
+    if estimated_bpm == 0:
+        confidence = max(25, confidence - 20)
+
+    return {
+        "duration_seconds": round(duration_s, 2),
+        "estimated_bpm": estimated_bpm,
+        "energy_level": energy_level,
+        "bass_level": bass_level,
+        "brightness": brightness,
+        "suggested_style": suggested_style,
+        "suggested_key": "unknown",
+        "confidence": confidence,
     }
 
 
@@ -268,6 +457,205 @@ def _match_autotune_preset(
 
     # Stash quality reasons for the main reason builder.
     preset["_quality_reasons"] = quality_reasons
+    preset["_source_note"] = "手动强度模式 — 以强度滑塊为主要匹配依据"
+
+    return preset
+
+
+# Map English backing-track style labels to Chinese equivalents for matching.
+_BACKING_STYLE_MAP = {
+    "pop": "流行节奏",
+    "trap": "沉浸 Trap",
+    "rnb": "未来 R&B",
+    "electronic": "清爽电子",
+}
+
+
+def _match_autotune_preset_auto(
+    beat_style: str,
+    scale: str,
+    analysis: dict,
+    strength_preference: int = 50,
+    beat_analysis: dict | None = None,
+    backing: dict | None = None,
+) -> dict:
+    """Auto-adaptation preset matching — beat-style and audio-quality driven.
+
+    The user's strength preference is used as a nudge, not as the primary
+    matching key.  Beat style + scale determine the base preset, then audio
+    quality flags and duration fine-tune the result.
+
+    When ``beat_analysis`` is provided (from /analyze-beat) or ``backing``
+    (from /analyze-backing-track), the detected features (BPM, energy, bass,
+    brightness, suggested_style) are used to further refine the Auto-Tune
+    parameters.
+    """
+    too_quiet = analysis.get("too_quiet", False)
+    clipped_risk = analysis.get("clipped_risk", False)
+    duration_s = analysis.get("duration_seconds", 0)
+    is_short = duration_s < 5.0
+
+    # Use backing or beat-analysis suggested_style if available.
+    effective_style = beat_style
+    if backing and backing.get("style"):
+        mapped = _BACKING_STYLE_MAP.get(backing["style"])
+        if mapped:
+            effective_style = mapped
+    elif beat_analysis:
+        suggested = beat_analysis.get("suggested_style", "")
+        if suggested:
+            effective_style = suggested
+
+    quality_reasons: list[str] = []
+
+    # ---- Step 1: quality-first overrides -------------------------------------
+    if too_quiet:
+        name = "natural_vocal"
+        confidence = 45
+        source_note = "人声过低（< −30 dBFS），自动选择自然修音避免伪影放大"
+    elif clipped_risk:
+        name = "mainstream_pop"
+        confidence = 50
+        source_note = "爆音风险（峰值 > −0.3 dBFS），自动降低修正强度保护音质"
+    else:
+        # ---- Step 2: beat-style + scale matching ----------------------------
+        if "Trap" in effective_style and scale == "minor":
+            name = "trap_hard"
+            confidence = 85
+            source_note = "小调 + Trap → 强修预设（trap_hard），保留低频压迫感与暗黑色彩"
+        elif "Trap" in effective_style:
+            name = "melodic_rap"
+            confidence = 72
+            source_note = "大调 + Trap → 旋律说唱预设（melodic_rap），兼顾节奏与旋律稳定"
+        elif "R&B" in effective_style and scale == "minor":
+            name = "rnb_smooth"
+            confidence = 88
+            source_note = "小调 + R&B → R&B 顺滑预设（rnb_smooth），保留转音与即兴情绪"
+        elif "R&B" in effective_style:
+            name = "mainstream_pop"
+            confidence = 68
+            source_note = "大调 + 未来 R&B → 流行修音预设（mainstream_pop），保留自然感"
+        elif "电子" in effective_style and strength_preference >= 75:
+            name = "robotic_hyperpop"
+            confidence = 60
+            source_note = f"清爽电子 + 强度偏好较高（{strength_preference}%）→ 倾向电音硬修（robotic_hyperpop）"
+        elif "电子" in effective_style and scale == "minor":
+            name = "melodic_rap"
+            confidence = 60
+            source_note = "小调 + 清爽电子 → 旋律说唱预设（melodic_rap），保持暗色律动"
+        elif "电子" in effective_style:
+            name = "mainstream_pop"
+            confidence = 78
+            source_note = "清爽电子 → 主流流行预设（mainstream_pop），清亮通透"
+        elif "流行" in effective_style and strength_preference >= 80:
+            name = "robotic_hyperpop"
+            confidence = 55
+            source_note = f"流行节奏 + 高强度偏好（{strength_preference}%）→ 可尝试电音硬修"
+        elif "流行" in effective_style:
+            name = "mainstream_pop"
+            confidence = 82
+            source_note = "流行节奏 → 标准流行修音预设（mainstream_pop）"
+        elif strength_preference >= 70:
+            name = "melodic_rap"
+            confidence = 55
+            source_note = f"默认匹配（强度偏好 {strength_preference}%）→ 旋律说唱预设"
+        elif strength_preference >= 35:
+            name = "mainstream_pop"
+            confidence = 70
+            source_note = f"默认匹配（强度偏好 {strength_preference}%）→ 主流流行预设"
+        else:
+            name = "natural_vocal"
+            confidence = 78
+            source_note = f"默认匹配（强度偏好 {strength_preference}%）→ 自然修音预设"
+
+    preset = MAINSTREAM_AUTOTUNE_PRESETS[name].copy()
+
+    # ---- Step 3: audio-quality adjustments (same scaling as manual) ----------
+    if too_quiet:
+        preset["retune_speed"] = max(18, preset["retune_speed"] - 10)
+        preset["correction_amount"] = max(15, preset["correction_amount"] - 20)
+        quality_reasons.append("输入音量过低（< −30 dBFS），已降低修正强度以避免伪影")
+        confidence = max(30, confidence - 20)
+
+    if clipped_risk:
+        preset["correction_amount"] = max(15, preset["correction_amount"] - 15)
+        quality_reasons.append("峰值接近 0 dBFS，存在爆音风险，已降低修正量")
+        confidence = max(30, confidence - 15)
+
+    # ---- Step 4: scale-based fine-tuning -------------------------------------
+    if scale == "minor":
+        preset["humanize"] = min(100, preset["humanize"] + 8)
+        preset["vibrato_preserve"] = min(100, preset["vibrato_preserve"] + 8)
+        if name in ("rnb_smooth", "trap_hard", "melodic_rap"):
+            confidence = min(100, confidence + 5)
+
+    # ---- Step 5: beat / backing-driven refinement ----------------------------
+    beat_note_parts: list[str] = []
+    refine_source = backing or beat_analysis
+    if refine_source and not too_quiet and not clipped_risk:
+        bass_lvl = refine_source.get("bass_level", "medium")
+        energy_lvl = refine_source.get("energy_level", "medium")
+        bright_raw = refine_source.get("brightness", "medium")
+        beat_bpm = refine_source.get("estimated_bpm", 0)
+
+        # Normalise brightness: backing uses dark/balanced/bright,
+        # beat_analysis uses low/medium/high.
+        if bright_raw in ("dark", "low"):
+            bright = "low"
+        elif bright_raw in ("bright", "high"):
+            bright = "high"
+        else:
+            bright = "medium"
+
+        source_label = "伴奏" if backing else "伴奏"
+
+        # Bass-heavy → faster retune + higher correction
+        if bass_lvl == "high":
+            preset["retune_speed"] = min(98, preset["retune_speed"] + 8)
+            preset["correction_amount"] = min(98, preset["correction_amount"] + 6)
+            beat_note_parts.append("伴奏低频强劲 → retune +8, correction +6")
+        elif bass_lvl == "low":
+            preset["retune_speed"] = max(20, preset["retune_speed"] - 5)
+            beat_note_parts.append("伴奏低频轻柔 → retune −5")
+
+        # High energy → can push harder
+        if energy_lvl == "high":
+            preset["correction_amount"] = min(98, preset["correction_amount"] + 5)
+            beat_note_parts.append("伴奏能量高 → correction +5，可承受更强修音")
+        elif energy_lvl == "low":
+            preset["humanize"] = min(100, preset["humanize"] + 10)
+            preset["vibrato_preserve"] = min(100, preset["vibrato_preserve"] + 8)
+            beat_note_parts.append("伴奏能量低 → humanize +10, vibrato +8，保留自然情绪")
+
+        # Brightness → formant adjustment
+        if bright == "high":
+            preset["formant_preserve"] = min(95, preset["formant_preserve"] + 8)
+            beat_note_parts.append("伴奏明亮 → formant_preserve +8")
+        elif bright == "low":
+            preset["formant_preserve"] = max(15, preset["formant_preserve"] - 10)
+            beat_note_parts.append("伴奏暗沉 → formant_preserve −10")
+
+        # BPM integration
+        if beat_bpm > 0:
+            beat_note_parts.append(f"伴奏 {beat_bpm} BPM")
+            if beat_bpm >= 120:
+                preset["retune_speed"] = min(98, preset["retune_speed"] + 3)
+            elif beat_bpm <= 80:
+                preset["humanize"] = min(100, preset["humanize"] + 5)
+
+    if beat_note_parts:
+        quality_reasons.append("伴奏驱动适配：" + "；".join(beat_note_parts))
+        source_note += "（伴奏特征已融入适配）"
+
+    # ---- Step 6: short-audio penalty -----------------------------------------
+    if is_short:
+        confidence = max(25, confidence - 20)
+        quality_reasons.append("音频较短（< 5 秒），置信度降低，建议上传完整段落以获得精准参数")
+
+    preset["confidence"] = confidence
+    preset["preset_source"] = "auto_adaptation"
+    preset["_quality_reasons"] = quality_reasons
+    preset["_source_note"] = source_note
 
     return preset
 
@@ -278,16 +666,33 @@ def _generate_autotune_profile(
     key: str,
     scale: str,
     beat_style: str,
+    autotune_mode: str = "manual",
+    beat_analysis: dict | None = None,
+    backing: dict | None = None,
 ) -> dict:
     """Generate engine-ready Auto-Tune parameters using the mainstream preset library.
 
-    A rule-based matcher picks the closest preset from MAINSTREAM_AUTOTUNE_PRESETS,
-    then audio-quality flags (too_quiet, clipping_risk) and scale (minor/major)
-    fine-tune the values.  The resulting profile is consumable by both the
-    current pitch-correction engine and a future pyworld + formant shifter.
+    In ``manual`` mode the slider strength is the primary matching key.
+    In ``auto`` mode the system analyses audio quality, beat style, scale, and
+    duration to pick the best preset autonomously — the slider is only a
+    preference nudge.
+
+    When ``beat_analysis`` (from /analyze-beat) or ``backing`` (from
+    /analyze-backing-track) is provided, their features refine the
+    auto-selected preset.  The profile also includes ``adaptation_inputs``
+    and ``adaptation_summary`` (v2.8 dual-input) describing what drove the
+    parameter selection.
     """
+    strength_int = int(autotune_strength)
+    is_auto = autotune_mode == "auto"
+
     # ---- 1. match preset -----------------------------------------------------
-    preset = _match_autotune_preset(autotune_strength, beat_style, scale, analysis)
+    if is_auto:
+        preset = _match_autotune_preset_auto(
+            beat_style, scale, analysis, strength_int, beat_analysis, backing,
+        )
+    else:
+        preset = _match_autotune_preset(autotune_strength, beat_style, scale, analysis)
 
     retune_speed = preset["retune_speed"]
     correction_amount = preset["correction_amount"]
@@ -299,6 +704,8 @@ def _generate_autotune_profile(
     suitable_for = preset.get("suitable_for", [])
     confidence = preset["confidence"]
     quality_reasons = preset.get("_quality_reasons", [])
+    source_note = preset.get("_source_note", "")
+    preset_source = preset["preset_source"]
 
     # ---- 2. legacy style_mode (for pitch-correction engine) ------------------
     style_mode = PRESET_TO_STYLE.get(preset_name, "natural")
@@ -322,6 +729,10 @@ def _generate_autotune_profile(
     scale_label = "小调" if scale == "minor" else "大调"
     reasons = list(quality_reasons)
 
+    mode_tag = "自动适配" if is_auto else "手动强度"
+    reasons.append(
+        f"[{mode_tag}] {source_note}"
+    )
     reasons.append(
         f"匹配预设「{preset_label}」— {preset['description']} "
         f"(置信度 {confidence}%)"
@@ -338,8 +749,11 @@ def _generate_autotune_profile(
         reasons.append(f"Beat 风格「{beat_style}」→ 倾向 R&B 顺滑预设")
 
     # ---- 5. next_step --------------------------------------------------------
+    duration_s = analysis.get("duration_seconds", 0)
     if analysis.get("too_quiet") or analysis.get("clipped_risk"):
         next_step = "音频质量存在问题，建议先改善录音条件（输入音量/爆音），再重新上传分析"
+    elif duration_s < 5.0:
+        next_step = "音频较短（< 5 秒），当前参数为初步判断，建议上传完整段落获得更精准的适配"
     elif preset_name == "natural_vocal":
         next_step = "人声自然稳定，参数保守。可直接进入 Beat 匹配阶段"
     elif preset_name == "mainstream_pop":
@@ -351,11 +765,26 @@ def _generate_autotune_profile(
     else:
         next_step = "已生成 R&B 顺滑参数，建议匹配 R&B/Soul 风格 Beat"
 
+    # ---- 6. adaptation metadata (v2.8 dual-input) ---------------------------
+    if backing:
+        style_source = "伴奏分析"
+        adaptation_summary = "人声 + 伴奏分析"
+    else:
+        style_source = "手动选择"
+        adaptation_summary = "人声 + 手动曲风"
+
+    adaptation_inputs = {
+        "vocal": "已上传人声",
+        "style_source": style_source,
+        "backing": backing,
+    }
+
     return {
+        "mode": autotune_mode,
         "preset_name": preset_name,
         "preset_label": preset_label,
         "suitable_for": suitable_for,
-        "preset_source": "mainstream_rule_preset",
+        "preset_source": preset_source,
         "confidence": confidence,
         "target_key": key,
         "target_scale": scale,
@@ -370,6 +799,8 @@ def _generate_autotune_profile(
         "vocal_quality": vocal_quality,
         "reason": "；".join(reasons),
         "next_step": next_step,
+        "adaptation_inputs": adaptation_inputs,
+        "adaptation_summary": adaptation_summary,
     }
 
 
@@ -380,24 +811,31 @@ def _generate_beat_profile(
     beat_style: str,
 ) -> dict:
     """Generate intelligent Beat-generation parameters from audio analysis
-    and Auto-Tune profile.
+    and Auto-Tune profile.  v2.7 — refined BPM ranges, vocal_match, short-audio
+    detection, and tighter style integration.
 
     This does NOT generate actual Beat audio — it produces a parameter
     blueprint that a future Beat engine can consume.
     """
     style_mode = autotune_profile.get("style_mode", "natural")
+    style_mode_label = autotune_profile.get("style_mode_label", "自然")
     key = autotune_profile.get("target_key", "C")
     scale = autotune_profile.get("target_scale", "major")
+    scale_label = autotune_profile.get("target_scale_label", "大调")
     too_quiet = analysis.get("too_quiet", False)
     clipped_risk = analysis.get("clipped_risk", False)
     correction_amount = autotune_profile.get("correction_amount", 40)
+    duration_s = analysis.get("duration_seconds", 0)
+    is_short = duration_s < 5.0
 
-    # ---- 1. target_bpm -------------------------------------------------------
+    # ---- 1. target_bpm (v2.7 per-style ranges) -------------------------------
     BPM_MAP = {
-        "清爽电子": 120, "沉浸 Trap": 140, "流行节奏": 110,
-        "未来 R&B": 90, "轻电子": 115, "氛围感": 85,
+        "清爽电子": 115,    # range 105–124
+        "沉浸 Trap": 78,    # range 70–88
+        "流行节奏": 100,    # range 90–112
+        "未来 R&B": 84,     # range 72–96
     }
-    target_bpm = BPM_MAP.get(beat_style, 110)
+    target_bpm = BPM_MAP.get(beat_style, 100)
 
     # ---- 2. groove_type ------------------------------------------------------
     if "Trap" in beat_style:
@@ -408,6 +846,7 @@ def _generate_beat_profile(
         groove_type = "straight"
 
     # ---- 3. drum_density (0–100) ---------------------------------------------
+    # Base: robotic/trap → harder drums; natural/pop → cleaner, more restrained
     if style_mode in ("robotic", "trap"):
         drum_density = 75
     elif style_mode == "pop":
@@ -419,12 +858,15 @@ def _generate_beat_profile(
         drum_density = max(30, drum_density - 20)
     if too_quiet:
         drum_density = max(25, drum_density - 15)
-    if scale == "minor":
+    if scale == "minor" and "Trap" in beat_style:
         drum_density = min(90, drum_density + 5)
+    if scale == "minor" and "R&B" in beat_style:
+        drum_density = min(85, drum_density + 3)
     if correction_amount > 80:
         drum_density = min(95, drum_density + 10)
 
     # ---- 4. bass_intensity (0–100) -------------------------------------------
+    # robotic/trap → heavy bass; natural/pop → restrained bass
     if style_mode in ("robotic", "trap"):
         bass_intensity = 80
     elif "Trap" in beat_style:
@@ -465,7 +907,35 @@ def _generate_beat_profile(
     else:
         arrangement = "前奏4 → 主歌16 → 副歌16 → 尾奏8"
 
-    # ---- 7. match_reason -----------------------------------------------------
+    # ---- 7. vocal_match ------------------------------------------------------
+    # Describes how well the vocal profile matches this beat style.
+    match_parts = []
+    if scale == "minor" and ("Trap" in beat_style or style_mode == "trap"):
+        match_parts.append(f"小调人声 + {style_mode_label}修音 → 与 {beat_style} 高度契合")
+    elif scale == "minor" and "R&B" in beat_style:
+        match_parts.append(f"小调人声 → 自然适配 R&B 情绪色彩")
+    elif scale == "major" and "电子" in beat_style:
+        match_parts.append(f"大调明亮人声 → 与电子风格能量匹配")
+    elif scale == "major" and "R&B" in beat_style:
+        match_parts.append("大调人声搭配 R&B 风格，可尝试加入色彩和弦")
+    elif correction_amount > 80:
+        match_parts.append(f"强修人声（{correction_amount}%）→ 适配现代电子/Trap 风格")
+    elif correction_amount < 40:
+        match_parts.append("自然修音人声 → 适合保留人声细节的编曲")
+
+    if not match_parts:
+        match_parts.append(f"{scale_label}人声 + {style_mode_label}修音 → 常规适配 {beat_style}")
+
+    if too_quiet:
+        match_parts.append("注意：人声偏低，成品中人声可能被伴奏覆盖")
+    if clipped_risk:
+        match_parts.append("注意：人声有爆音风险，混音时需额外留 headroom")
+    if is_short:
+        match_parts.append("注意：音频较短（< 5 秒），当前仅适合生成草稿 Beat Profile")
+
+    vocal_match = "；".join(match_parts)
+
+    # ---- 8. match_reason -----------------------------------------------------
     reasons = []
     if "Trap" in beat_style:
         reasons.append(f"{beat_style} → {target_bpm} BPM + triplet hi-hat + 808 bass")
@@ -490,8 +960,10 @@ def _generate_beat_profile(
     if clipped_risk:
         reasons.append("人声有爆音风险 → 鼓组密度已降低")
 
-    # ---- 8. next_step --------------------------------------------------------
-    if too_quiet or clipped_risk:
+    # ---- 9. next_step --------------------------------------------------------
+    if is_short:
+        next_step = "音频过短（< 5 秒），当前 Beat Profile 为草稿级——建议上传完整段落以获得精准参数"
+    elif too_quiet or clipped_risk:
         next_step = "先改善录音质量，再进入 Beat 生成阶段"
     else:
         next_step = "参数已就绪，可进入 Beat 音频生成阶段（下一版本实现）"
@@ -504,6 +976,7 @@ def _generate_beat_profile(
         "bass_intensity": bass_intensity,
         "chord_progression": chords,
         "arrangement_hint": arrangement,
+        "vocal_match": vocal_match,
         "match_reason": "；".join(reasons) if reasons else "—",
         "next_step": next_step,
     }
@@ -792,6 +1265,160 @@ def health():
     return {"status": "ok"}
 
 
+@app.post("/analyze-beat")
+async def analyze_beat(
+    file: UploadFile = File(...),
+):
+    """Upload a beat/backing track for musical-feature analysis.
+
+    Returns a JSON object with estimated BPM, energy level, bass level,
+    brightness, and a rule-based suggested style.  No AI — pure signal
+    processing via librosa.
+
+    The result can be passed as ``beat_analysis`` to ``/process-vocal``
+    for beat-driven Auto-Tune profile generation.
+    """
+    # --- Validate Content-Type -------------------------------------------------
+    if file.content_type not in ALLOWED_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unsupported audio type: {file.content_type}. "
+                "Please upload WAV, MP3, MP4, or M4A audio."
+            ),
+        )
+
+    # --- Read & validate file contents -----------------------------------------
+    contents = await file.read()
+
+    if not contents:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    if len(contents) > MAX_SIZE_BYTES:
+        size_mb = len(contents) / (1024 * 1024)
+        raise HTTPException(
+            status_code=413,
+            detail=f"File size {size_mb:.1f} MB exceeds the 25 MB limit.",
+        )
+
+    # --- Save raw & convert to WAV ---------------------------------------------
+    suffix = Path(file.filename or "beat.wav").suffix or ".wav"
+    beat_id = uuid.uuid4().hex
+    raw_name = f"beat_raw_{beat_id}{suffix}"
+    raw_path = UPLOAD_DIR / raw_name
+    raw_path.write_bytes(contents)
+
+    wav_name = f"beat_processed_{beat_id}.wav"
+    wav_path = PROCESSED_DIR / wav_name
+
+    try:
+        _convert_to_wav(raw_path, wav_path)
+    except CouldntDecodeError:
+        raw_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=400,
+            detail="Could not decode the uploaded beat. The file may be "
+                   "corrupted or in an unsupported codec.",
+        )
+    except FileNotFoundError:
+        raw_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=500,
+            detail="ffmpeg is not installed or not on your PATH. "
+                   "Please install ffmpeg and restart the backend.",
+        )
+
+    # --- Analyse ---------------------------------------------------------------
+    try:
+        result = _analyze_beat_audio(wav_path)
+    except Exception:
+        logging.exception("Beat analysis failed")
+        raise HTTPException(
+            status_code=500,
+            detail="Beat analysis failed. The file may be too short or silent.",
+        )
+
+    return result
+
+
+@app.post("/analyze-backing-track")
+async def analyze_backing_track(
+    file: UploadFile = File(...),
+):
+    """Upload a backing track for musical-feature analysis (v2.8 dual-input).
+
+    Returns a JSON object with estimated BPM, energy level, bass level,
+    brightness (``dark`` / ``balanced`` / ``bright``), a suggested style
+    (English: ``pop`` / ``trap`` / ``rnb`` / ``electronic`` / ``unknown``),
+    and a confidence score (0–100).
+
+    The result fields can be passed as separate form fields to
+    ``/process-vocal`` for backing-driven Auto-Tune profile generation.
+    """
+    # --- Validate Content-Type -------------------------------------------------
+    if file.content_type not in ALLOWED_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unsupported audio type: {file.content_type}. "
+                "Please upload WAV, MP3, MP4, or M4A audio."
+            ),
+        )
+
+    # --- Read & validate file contents -----------------------------------------
+    contents = await file.read()
+
+    if not contents:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    if len(contents) > MAX_SIZE_BYTES:
+        size_mb = len(contents) / (1024 * 1024)
+        raise HTTPException(
+            status_code=413,
+            detail=f"File size {size_mb:.1f} MB exceeds the 25 MB limit.",
+        )
+
+    # --- Save raw & convert to WAV ---------------------------------------------
+    suffix = Path(file.filename or "backing.wav").suffix or ".wav"
+    track_id = uuid.uuid4().hex
+    raw_name = f"backing_raw_{track_id}{suffix}"
+    raw_path = UPLOAD_DIR / raw_name
+    raw_path.write_bytes(contents)
+
+    wav_name = f"backing_processed_{track_id}.wav"
+    wav_path = PROCESSED_DIR / wav_name
+
+    try:
+        _convert_to_wav(raw_path, wav_path)
+    except CouldntDecodeError:
+        raw_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=400,
+            detail="Could not decode the uploaded backing track. The file may "
+                   "be corrupted or in an unsupported codec.",
+        )
+    except FileNotFoundError:
+        raw_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=500,
+            detail="ffmpeg is not installed or not on your PATH. "
+                   "Please install ffmpeg and restart the backend.",
+        )
+
+    # --- Analyse ---------------------------------------------------------------
+    try:
+        result = _analyze_backing_track(wav_path)
+    except Exception:
+        logging.exception("Backing-track analysis failed")
+        raise HTTPException(
+            status_code=500,
+            detail="Backing-track analysis failed. The file may be too short "
+                   "or silent.",
+        )
+
+    return result
+
+
 @app.post("/process-vocal")
 async def process_vocal(
     file: UploadFile = File(...),
@@ -799,10 +1426,27 @@ async def process_vocal(
     key: str = Form("C"),
     scale: str = Form("major"),
     beat_style: str = Form("清爽电子"),
+    autotune_mode: str = Form("manual"),
+    beat_analysis: str = Form(""),
+    backing_style: str = Form(""),
+    backing_energy: str = Form(""),
+    backing_bass: str = Form(""),
+    backing_brightness: str = Form(""),
 ):
     """Accept a vocal file, convert to WAV, apply real Auto-Tune pitch
     correction (F0 detection + pitch_shift toward target key/scale),
-    and return the processed WAV with analysis and profile headers."""
+    and return the processed WAV with analysis and profile headers.
+
+    ``autotune_mode`` — ``"manual"`` (default, slider-driven) or ``"auto"``
+    (system selects the best preset from audio quality + beat style + scale).
+
+    ``beat_analysis`` — optional JSON string from ``/analyze-beat``.  When
+    provided in auto mode, beat features refine the Auto-Tune profile.
+
+    ``backing_style`` / ``backing_energy`` / ``backing_bass`` /
+    ``backing_brightness`` — optional fields from ``/analyze-backing-track``
+    (v2.8 dual-input).  When provided, they drive Auto-Tune adaptation
+    alongside vocal analysis."""
     # --- 1. Validate Content-Type -------------------------------------------
     if file.content_type not in ALLOWED_TYPES:
         raise HTTPException(
@@ -855,8 +1499,27 @@ async def process_vocal(
         )
 
     # --- 5. Generate Auto-Tune profile --------------------------------------
+    beat_analysis_dict: dict | None = None
+    if beat_analysis and beat_analysis.strip():
+        try:
+            beat_analysis_dict = json.loads(beat_analysis)
+        except json.JSONDecodeError:
+            logging.warning("Invalid beat_analysis JSON, ignoring")
+
+    # Build backing dict from separate form fields (v2.8 dual-input).
+    backing: dict | None = None
+    if any([backing_style.strip(), backing_energy.strip(),
+            backing_bass.strip(), backing_brightness.strip()]):
+        backing = {
+            "style": backing_style.strip() or None,
+            "energy": backing_energy.strip() or None,
+            "bass": backing_bass.strip() or None,
+            "brightness": backing_brightness.strip() or None,
+        }
+
     autotune_profile = _generate_autotune_profile(
-        analysis, autotune_strength, key, scale, beat_style
+        analysis, autotune_strength, key, scale, beat_style, autotune_mode,
+        beat_analysis_dict, backing,
     )
 
     # --- 5b. Generate Beat-generation profile ---------------------------------
@@ -890,11 +1553,17 @@ async def process_vocal(
         headers["X-Original-Filename"] = quote(original, safe="")
 
     settings = {
+        "autotune_mode": autotune_mode,
         "autotune_strength": autotune_strength,
         "key": key,
         "scale": scale,
         "beat_style": beat_style,
     }
+    if backing:
+        settings["backing_style"] = backing.get("style")
+        settings["backing_energy"] = backing.get("energy")
+        settings["backing_bass"] = backing.get("bass")
+        settings["backing_brightness"] = backing.get("brightness")
     headers["X-Processing-Settings"] = quote(
         json.dumps(settings, ensure_ascii=False), safe=""
     )
@@ -903,7 +1572,7 @@ async def process_vocal(
         json.dumps(autotune_profile, ensure_ascii=False), safe=""
     )
 
-    headers["X-Beat-Generation-Profile"] = quote(
+    headers["X-Beat-Profile"] = quote(
         json.dumps(beat_profile, ensure_ascii=False), safe=""
     )
 
