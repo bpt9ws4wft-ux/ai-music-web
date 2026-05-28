@@ -1,4 +1,4 @@
-# AI Music Web Backend v2.8 (preset engine + auto-adaptation + beat-driven adaptation)
+# AI Music Web Backend v2.9 (preset engine + dual-input adaptation + real profile-driven processing)
 
 Converts any supported audio file to a normalised WAV (16-bit, 44.1 kHz,
 mono), applies **real Auto-Tune pitch correction** using a **mainstream
@@ -160,6 +160,9 @@ and fine-tuned by audio quality analysis:
 | `next_step` | (string) | Suggested next action for the user |
 | `adaptation_inputs` | (object) | v2.8 dual-input: `vocal`, `style_source`, `backing` sub-fields |
 | `adaptation_summary` | (string) | v2.8: `仅人声` / `人声 + 手动曲风` / `人声 + 伴奏分析` |
+| `processing_intensity` | `medium` | v2.9: `low` / `medium` / `high` — how aggressive the processing is |
+| `applied_pitch_correction` | `true` | v2.9: always `true` — confirms real pitch correction was applied |
+| `processing_summary` | (string) | v2.9: human-readable description of the processing pipeline |
 
 ### Mainstream Preset Library (v2.6.2)
 
@@ -373,6 +376,35 @@ Backing features are mapped to Chinese style names internally for the preset
 matcher, and backing-driven refinement (bass → retune/correction,
 energy → humanize, brightness → formant, BPM → retune/humanize) is applied
 identically to the beat-analysis path.
+
+### Profile-Driven Processing (v2.9)
+
+All Auto-Tune profile parameters now genuinely affect the audio output.
+Different presets produce **audibly different** results:
+
+| Preset | retune | correction | humanize | formant | vibrato | Audible character |
+|---|---|---|---|---|---|---|
+| `natural_vocal` | 30 | 35% | 85 | 85 | 90 | Very subtle, 5120-sample segments, highest dry blend |
+| `rnb_smooth` | 42 | 45% | 80 | 82 | 88 | Gentle snap, 4608-sample segments, vibrato preserved |
+| `mainstream_pop` | 52 | 55% | 60 | 72 | 65 | Balanced correction, 4096-sample segments |
+| `melodic_rap` | 65 | 70% | 42 | 58 | 48 | 3072-sample segs, hard-tune, median aggregation |
+| `trap_hard` | 82 | 85% | 25 | 45 | 28 | 3072-sample segs + 80Hz low-cut, deep hard-tune |
+| `robotic_hyperpop` | 96 | 96% | 8 | 20 | 10 | 2048-sample segs, stair-step quantise, near-zero dry |
+
+**How each parameter affects the audio:**
+
+| Parameter | Engine effect |
+|---|---|
+| `retune_speed` | Controls median-filter smoothing window (1–25 frames). Higher = faster pitch snap. |
+| `correction_amount` | Blend factor 0–100%. Above 70% enters hard-tune region with accelerated snap. |
+| `humanize` | Timing jitter (±25% of step) + amplitude jitter (±12%) on segment boundaries. Higher = more natural, looser feel. |
+| `formant_preserve` | Dry/wet blend (0–40% dry). Higher = more original vocal character blended back. |
+| `vibrato_preserve` | Detects vibrato segments via F0 coefficient-of-variation; scales down correction on those frames. |
+| `style_mode` | Controls segment size: robotic=2048, trap=3072, pop=4096, rnb=4608, natural=5120 samples. Also controls overlap, median/mean aggregation, stair-step quantise, and 80 Hz low-cut. |
+
+**Quality overrides:**
+- `clipped_risk`: −8 dB input gain + correction reduced by 25%
+- `too_quiet`: loudness boost (max +21.6 dB) + correction capped at 50% to avoid noise amplification
 
 ## Upload Rules
 

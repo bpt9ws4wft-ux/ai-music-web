@@ -425,7 +425,7 @@
             </div>
             <div id="autotuneProfile" style="display:none; margin-top:12px; padding:12px; border-radius:12px; background:linear-gradient(180deg, rgba(139,92,246,0.10), rgba(34,211,238,0.05)); border:1px solid rgba(139,92,246,0.18);">
               <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                <small style="color:var(--accent); font-weight:700;">智能 Auto-Tune 配置（已执行基础音高校正 MVP）</small>
+                <small style="color:var(--accent); font-weight:700;">智能 Auto-Tune 配置（已执行基础 Auto-Tune 音高校正）</small>
                 <span id="profileMode" style="font-size:12px; padding:3px 10px; border-radius:999px; background:rgba(139,92,246,0.15); color:var(--accent); font-weight:700;">--</span>
               </div>
               <div style="display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:8px;">
@@ -476,6 +476,10 @@
                   <div><small style="color:var(--muted); font-size:10px;">低频</small><div id="backingDetailBass" style="font-size:12px; color:var(--text);">--</div></div>
                   <div><small style="color:var(--muted); font-size:10px;">明亮度</small><div id="backingDetailBrightness" style="font-size:12px; color:var(--text);">--</div></div>
                 </div>
+              </div>
+              <div style="margin-top:8px; padding:8px 10px; border-radius:8px; background:rgba(139,92,246,0.06); border:1px solid rgba(139,92,246,0.10);">
+                <small style="color:var(--accent); display:block; font-size:11px; margin-bottom:4px;">处理摘要</small>
+                <div id="profileProcessingSummary" style="font-size:12px; color:var(--text); line-height:1.5;">--</div>
               </div>
               <div style="margin-top:8px; padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03);">
                 <small style="color:var(--muted); display:block; font-size:11px; margin-bottom:4px;">适配理由</small>
@@ -538,7 +542,7 @@
               </div>
               <small id="feedbackResult" style="display:none; margin-top:8px; color:var(--success);"></small>
             </div>
-            <p class="section-copy" style="margin-top: 12px; margin-bottom: 0;">v2.8：已执行基础音高校正 MVP + 伴奏驱动 Auto-Tune 适配 + 自动/手动双模 + 智能 Beat Profile 生成器。</p>
+            <p class="section-copy" style="margin-top: 12px; margin-bottom: 0;">v2.9：已执行基础 Auto-Tune 音高校正 + 双输入智能适配 + 自动/手动双模 + 智能 Beat Profile 生成器。</p>
           </div>
         </div>
 
@@ -870,7 +874,7 @@
           <p class="footer-note" id="beatPreviewHint" style="margin-bottom:0;">浏览器合成的节奏预览，不是 AI 生成成品。</p>
         </div>
 
-        <p class="footer-note">当前版本不连接后端、不调用真实 AI、不做真实修音；录音为浏览器本地录音。</p>
+        <p class="footer-note">当前版本已执行基础 Auto-Tune 音高校正（librosa），不调用外部 AI；录音为浏览器本地录音。</p>
       </section>
     </div>
   </main>
@@ -956,6 +960,7 @@
     const profileQuality = document.getElementById('profileQuality');
     const profileReason = document.getElementById('profileReason');
     const profileNextStep = document.getElementById('profileNextStep');
+    const profileProcessingSummary = document.getElementById('profileProcessingSummary');
     const profileAdaptationSummary = document.getElementById('profileAdaptationSummary');
     const profileBackingDetails = document.getElementById('profileBackingDetails');
     const backingDetailStyle = document.getElementById('backingDetailStyle');
@@ -1209,6 +1214,7 @@
       profileQuality.textContent = profile.vocal_quality;
       profileReason.textContent = profile.reason;
       profileNextStep.textContent = profile.next_step;
+      profileProcessingSummary.textContent = profile.processing_summary || '--';
       // v2.8 dual-input: adaptation source
       profileAdaptationSummary.textContent = profile.adaptation_summary || '--';
       // Backing details

@@ -382,7 +382,7 @@ MAINSTREAM_AUTOTUNE_PRESETS = {
 PRESET_TO_STYLE = {
     "natural_vocal": "natural",
     "mainstream_pop": "pop",
-    "rnb_smooth": "natural",   # smooth processing like natural
+    "rnb_smooth": "rnb",
     "melodic_rap": "trap",
     "trap_hard": "trap",
     "robotic_hyperpop": "robotic",
@@ -765,7 +765,36 @@ def _generate_autotune_profile(
     else:
         next_step = "已生成 R&B 顺滑参数，建议匹配 R&B/Soul 风格 Beat"
 
-    # ---- 6. adaptation metadata (v2.8 dual-input) ---------------------------
+    # ---- 6. processing metadata (v2.9) --------------------------------------
+    if correction_amount >= 80 and retune_speed >= 75:
+        processing_intensity = "high"
+    elif correction_amount >= 50 or retune_speed >= 55:
+        processing_intensity = "medium"
+    else:
+        processing_intensity = "low"
+
+    intensity_labels = {"high": "重度处理", "medium": "中度处理", "low": "轻度处理"}
+
+    style_summary_map = {
+        "robotic": "极快音高修正 + 离散量化 + 干/湿混合最小",
+        "trap": "快速音高修正 + 低切 80Hz + 低 humanize",
+        "pop": "适中音高修正 + 标准平滑",
+        "rnb": "中慢速音高修正 + 中高 humanize + 中高 formant/vibrato 保留",
+        "natural": "慢速音高修正 + 高 humanize + 高 formant/vibrato 保留",
+    }
+    style_summary = style_summary_map.get(style_mode, "标准音高修正")
+
+    processing_summary = (
+        f"{intensity_labels[processing_intensity]}：{style_summary}。"
+        f"retune={retune_speed} correction={correction_amount}% "
+        f"humanize={humanize} formant={formant_preserve} vibrato={vibrato_preserve}"
+    )
+    if analysis.get("too_quiet"):
+        processing_summary += " | 响度补偿已应用（修正上限 50%）"
+    if analysis.get("clipped_risk"):
+        processing_summary += " | 爆音保护已应用（−8 dB + 修正降低 25%）"
+
+    # ---- 7. adaptation metadata (v2.8 dual-input) ---------------------------
     if backing:
         style_source = "伴奏分析"
         adaptation_summary = "人声 + 伴奏分析"
@@ -801,6 +830,9 @@ def _generate_autotune_profile(
         "next_step": next_step,
         "adaptation_inputs": adaptation_inputs,
         "adaptation_summary": adaptation_summary,
+        "processing_intensity": processing_intensity,
+        "applied_pitch_correction": True,
+        "processing_summary": processing_summary,
     }
 
 
@@ -1019,6 +1051,10 @@ def _pitch_correct(
     correction_amount: float,
     retune_speed: float,
     style_mode: str = "natural",
+    humanize: float = 50.0,
+    formant_preserve: float = 50.0,
+    vibrato_preserve: float = 50.0,
+    quality_override: str | None = None,
 ) -> np.ndarray:
     """Real pitch correction via F0 detection + per-segment phase-vocoder shift.
 
@@ -1030,14 +1066,29 @@ def _pitch_correct(
     correction_amount : 0–100  (blend factor: 0 = dry, 100 = full snap)
     retune_speed : 0–100  (higher = less smoothing → faster snap)
     style_mode : str  (natural / pop / trap / robotic)
+    humanize : 0–100  (higher = more timing/amplitude jitter for natural feel)
+    formant_preserve : 0–100  (higher = more dry signal blended back)
+    vibrato_preserve : 0–100  (higher = less correction on vibrato segments)
+    quality_override : if ``\"clipped\"`` → reduce correction; if ``\"quiet\"`` → cap correction
     """
     import librosa
     from scipy.ndimage import median_filter
+
+    original = samples.copy()
 
     # Quick guard: skip near-silent inputs.
     if np.sqrt(np.mean(samples ** 2)) < 0.002:
         logging.info("Pitch correction skipped: near-silent input")
         return samples
+
+    # ---- quality overrides ---------------------------------------------------
+    if quality_override == "quiet":
+        correction_amount = min(correction_amount, 50.0)
+        retune_speed = min(retune_speed, 45.0)
+        logging.info("Quality override (too_quiet): correction capped at 50%%, retune at 45")
+    elif quality_override == "clipped":
+        correction_amount = max(15.0, correction_amount * 0.75)
+        logging.info("Quality override (clipped): correction reduced by 25%%")
 
     # ---- F0 detection --------------------------------------------------------
     try:
@@ -1058,7 +1109,37 @@ def _pitch_correct(
 
     n_frames = len(f0)
     strength = correction_amount / 100.0          # 0.0–1.0
-    HARD_TUNE = 0.70                               # threshold for quantize behaviour
+
+    # Per-style hard-tune threshold — lower = kicks in sooner at lower correction %.
+    HARD_TUNE = {
+        "robotic": 0.35,
+        "trap": 0.55,
+        "pop": 0.70,
+        "rnb": 0.75,
+        "natural": 0.85,
+    }.get(style_mode, 0.70)
+
+    # ---- vibrato detection ---------------------------------------------------
+    # Compute local pitch variance over a sliding window; high variance
+    # regions are likely vibrato.  Scale down correction there.
+    vibrato_mask = np.ones(n_frames, dtype=np.float64)
+    if vibrato_preserve > 20.0:
+        vibrato_scale = vibrato_preserve / 100.0   # 0.2 → 1.0
+        window = 7  # frames
+        for i in range(n_frames):
+            lo = max(0, i - window)
+            hi = min(n_frames, i + window + 1)
+            segment = f0[lo:hi]
+            voiced_seg = voiced_flag[lo:hi]
+            valid = segment[voiced_seg]
+            if len(valid) >= 3:
+                local_std = float(np.std(valid))
+                local_mean = float(np.mean(valid)) + 1e-9
+                cv = local_std / local_mean  # coefficient of variation
+                if cv > 0.012:
+                    vibrato_mask[i] = max(0.15, 1.0 - vibrato_scale * 0.85)
+                elif cv > 0.008:
+                    vibrato_mask[i] = max(0.35, 1.0 - vibrato_scale * 0.65)
 
     # ---- per-frame semitone correction ---------------------------------------
     correction_st = np.zeros(n_frames, dtype=np.float64)
@@ -1069,80 +1150,119 @@ def _pitch_correct(
             raw_diff = nearest - midi               # full semitone gap
 
             if strength >= HARD_TUNE:
-                # Hard-tune region: accelerate toward full-quantize snap.
-                # At 0.70 strength → 70 % of raw_diff
-                # At 1.00 strength → 100 % of raw_diff (flat target, no vibrato)
-                t = (strength - HARD_TUNE) / (1.0 - HARD_TUNE)  # 0 → 1
+                t = (strength - HARD_TUNE) / (1.0 - HARD_TUNE)
                 effective = HARD_TUNE + t * (1.0 - HARD_TUNE)
                 correction_st[i] = raw_diff * effective
             else:
                 correction_st[i] = raw_diff * strength
 
-    # ---- stair-step quantize for robotic mode --------------------------------
-    if style_mode == "robotic" and strength >= 0.90:
-        # Round corrections to 0.5-st discrete steps — characteristic
-        # "stair-step" pitch contour of hard Auto-Tune.
-        correction_st = np.round(correction_st * 2.0) / 2.0
+            # Apply vibrato mask: reduce correction on vibrato frames.
+            correction_st[i] *= vibrato_mask[i]
 
-    # ---- retune_speed → smoothing filter size --------------------------------
-    # More aggressive mode-dependent mapping than v2.6.0.
+    # ---- stair-step quantize for robotic / trap modes ------------------------
+    if style_mode == "robotic" and strength >= 0.80:
+        correction_st = np.round(correction_st)  # 1.0 st steps — hard quantize
+    elif style_mode == "trap" and strength >= 0.85:
+        correction_st = np.round(correction_st * 2.0) / 2.0  # 0.5 st steps
+
+    # ---- retune_speed → smoothing filter size (per-style ranges) -------------
     if style_mode == "robotic":
         filter_size = 1
     elif style_mode == "trap":
-        filter_size = max(1, int(8 - retune_speed * 0.10))
+        filter_size = max(1, int(10 - retune_speed * 0.12))
     elif style_mode == "pop":
         filter_size = max(1, int(21 - retune_speed * 0.25))
+    elif style_mode == "rnb":
+        filter_size = max(1, int(25 - retune_speed * 0.30))
     else:  # natural
-        filter_size = max(1, int(25 - retune_speed * 0.32))
+        filter_size = max(1, int(31 - retune_speed * 0.36))
 
     if filter_size > 1:
         correction_st = median_filter(correction_st, size=filter_size)
 
-    # ---- adaptive segment sizing ---------------------------------------------
-    hop = 512
+    # ---- humanize: timing & amplitude jitter --------------------------------
+    do_time_jitter = humanize > 15.0
+    do_amp_jitter = humanize > 25.0
+    jitter_scale = max(0.0, (100.0 - humanize) / 100.0)
+
+    # ---- adaptive segment sizing (wider 6× spread) ---------------------------
+    hop = 256
     if style_mode == "robotic":
-        seg_samples = 2048          # ~46 ms — fast-tracking, hard snap
-        step = seg_samples // 2     # 50 % overlap
+        seg_samples = 1024          # ~23 ms — ultra-fast tracking, hard snap
+        base_step = seg_samples // 4     # 25 % overlap (aggressive)
         use_median = True
     elif style_mode == "trap":
-        seg_samples = 3072          # ~70 ms — responsive
-        step = seg_samples // 2
+        seg_samples = 2560          # ~58 ms — responsive
+        base_step = seg_samples // 2
         use_median = True
     elif style_mode == "pop":
         seg_samples = 4096          # ~93 ms — balanced
-        step = seg_samples // 3
+        base_step = seg_samples // 3
+        use_median = False
+    elif style_mode == "rnb":
+        seg_samples = 5120          # ~116 ms — smooth
+        base_step = seg_samples // 3
         use_median = False
     else:  # natural
-        seg_samples = 5120          # ~116 ms — slow, smooth
-        step = seg_samples // 3
+        seg_samples = 6144          # ~139 ms — slow, wide, smooth
+        base_step = seg_samples // 3
         use_median = False
 
+    # Pre-compute per-segment correction values for the envelope loop.
     output = np.zeros(len(samples) + seg_samples, dtype=np.float64)
     weight = np.zeros_like(output)
 
-    for start in range(0, len(samples), step):
-        end = min(start + seg_samples, len(samples))
-        if end - start < hop:
+    rng = np.random.RandomState(42)
+
+    use_rect_env = (style_mode == "robotic")
+
+    seg_start = 0
+    while seg_start < len(samples):
+        # Apply humanize jitter to segment boundary.
+        jitter = 0
+        if do_time_jitter and jitter_scale < 0.95:
+            max_jitter = int(base_step * 0.50 * (1.0 - jitter_scale))
+            if max_jitter > 0:
+                jitter = rng.randint(-max_jitter, max_jitter + 1)
+        step = max(hop, base_step + jitter)
+
+        end = min(seg_start + seg_samples, len(samples))
+        if end - seg_start < hop:
+            seg_start += step
             continue
 
-        chunk = samples[start:end].astype(np.float64).copy()
+        chunk = samples[seg_start:end].astype(np.float64).copy()
         chunk_len = len(chunk)
 
-        f_start = start // hop
+        f_start = seg_start // hop
         f_end = min(end // hop + 1, n_frames)
         if f_end > f_start:
             seg_corrections = correction_st[f_start:f_end]
-            # Median for hard-tune → snappier; mean for natural → smoother.
             semitones = float(np.median(seg_corrections) if use_median else np.mean(seg_corrections))
+
+            # Humanize amplitude: random variation of correction amount.
+            if do_amp_jitter and jitter_scale < 0.9:
+                amp_jitter = 1.0 + rng.uniform(-0.25, 0.25) * (1.0 - jitter_scale)
+                semitones *= amp_jitter
         else:
             semitones = 0.0
 
-        # Wider clamp for hard-tune mode.
-        max_shift = 8.0 if strength >= HARD_TUNE else 6.0
+        # Per-style max shift clamp.
+        if style_mode in ("robotic", "trap") and strength >= HARD_TUNE:
+            max_shift = 12.0
+        elif strength >= HARD_TUNE:
+            max_shift = 8.0
+        else:
+            max_shift = 6.0
         semitones = max(-max_shift, min(max_shift, semitones))
 
-        # Threshold: 1 cent for hard-tune, 3 cents for natural.
-        threshold = 0.01 if strength >= HARD_TUNE else 0.03
+        # Per-style correction threshold (cents).
+        if style_mode == "robotic":
+            threshold = 0.005   # 0.5 cents — micro-corrections
+        elif style_mode == "trap":
+            threshold = 0.01    # 1 cent
+        else:
+            threshold = 0.03    # 3 cents
         if abs(semitones) > threshold:
             try:
                 shifted = librosa.effects.pitch_shift(
@@ -1153,23 +1273,70 @@ def _pitch_correct(
         else:
             shifted = chunk.copy()
 
-        # Overlap-add envelope (simple trapezoid).
+        # Overlap-add envelope.
         env = np.ones(chunk_len, dtype=np.float64)
-        if start > 0:
-            r = min(step, chunk_len)
-            env[:r] = np.linspace(0.0, 1.0, r)
-        if end < len(samples):
-            r = min(step, chunk_len)
-            env[-r:] = np.linspace(1.0, 0.0, r)
+        if use_rect_env:
+            # Rectangular — no crossfade, sharper transitions for robotic.
+            pass
+        else:
+            if seg_start > 0:
+                r = min(step, chunk_len)
+                env[:r] = np.linspace(0.0, 1.0, r)
+            if end < len(samples):
+                r = min(step, chunk_len)
+                env[-r:] = np.linspace(1.0, 0.0, r)
 
-        out_len = min(chunk_len, len(output) - start)
-        output[start:start + out_len] += shifted[:out_len] * env[:out_len]
-        weight[start:start + out_len] += env[:out_len]
+        out_len = min(chunk_len, len(output) - seg_start)
+        output[seg_start:seg_start + out_len] += shifted[:out_len] * env[:out_len]
+        weight[seg_start:seg_start + out_len] += env[:out_len]
+
+        seg_start += step
 
     # Normalise overlap region.
     mask = weight > 0
     output[mask] /= weight[mask]
     output = output[:len(samples)]
+
+    # ---- robotic second pass: re-detect F0 on output & snap residuals ---------
+    if style_mode == "robotic":
+        try:
+            f0_pass2, vf_pass2, _ = librosa.pyin(
+                output.astype(np.float64),
+                fmin=librosa.note_to_hz("C2"),
+                fmax=librosa.note_to_hz("C7"),
+                sr=sr,
+                hop_length=256,
+            )
+            if f0_pass2 is not None and np.any(vf_pass2):
+                n2 = len(f0_pass2)
+                for i in range(n2):
+                    if vf_pass2[i] and f0_pass2[i] > 0:
+                        midi = librosa.hz_to_midi(f0_pass2[i])
+                        nearest = min(target_notes, key=lambda n: abs(n - midi))
+                        diff = nearest - midi
+                        if abs(diff) > 0.10:  # >10 cents residual → snap hard
+                            t_start = i * 256
+                            t_end = min(t_start + 256, len(output))
+                            seg = output[t_start:t_end].astype(np.float64)
+                            try:
+                                shifted = librosa.effects.pitch_shift(
+                                    y=seg, sr=sr, n_steps=diff,
+                                )
+                                output[t_start:t_end] = shifted[:len(seg)]
+                            except Exception:
+                                pass
+        except Exception:
+            pass
+
+        # Tanh saturation for robotic character.
+        output = np.tanh(output * 1.3) / 1.3
+
+    # ---- formant_preserve: dry/wet blend -------------------------------------
+    # Higher formant_preserve → more original character blended back.
+    # Max 75 % dry blend for extreme contrast with robotic.
+    fp = formant_preserve / 100.0  # 0.0 → 1.0
+    dry_mix = fp * 0.75            # 0 % → 75 % dry
+    output = output * (1.0 - dry_mix) + original[:len(output)] * dry_mix
 
     # Final peak protection.
     peak = np.max(np.abs(output))
@@ -1188,10 +1355,18 @@ def _apply_autotune_preview(
 ) -> AudioSegment:
     """Apply real Auto-Tune pitch correction + gain staging to a WAV.
 
+    Uses ALL profile parameters (v2.9):
+    - correction_amount, retune_speed, style_mode → pitch correction engine
+    - humanize → timing/amplitude jitter for natural feel
+    - formant_preserve → dry/wet blend to preserve vocal character
+    - vibrato_preserve → reduced correction on vibrato segments
+
     Processing chain:
-    1. Clipping protection (gain reduction in numpy)
+    1. Clipping protection (gain reduction, stronger for clipped risk)
     2. Loudness normalisation (RMS toward -17 dBFS)
-    3. Pitch correction (librosa F0 + per-segment pitch_shift → target scale)
+    3. Pitch correction (F0 + per-segment pitch_shift → target scale,
+       using retune_speed, correction_amount, humanize, formant_preserve,
+       vibrato_preserve, style_mode)
     4. Style-specific tonal shaping (80 Hz low-cut for trap/robotic)
     5. Final peak limiting
     """
@@ -1202,24 +1377,37 @@ def _apply_autotune_preview(
     style_mode = profile.get("style_mode", "natural")
     correction_amount = float(profile.get("correction_amount", 40))
     retune_speed = float(profile.get("retune_speed", 50))
+    humanize = float(profile.get("humanize", 50))
+    formant_preserve = float(profile.get("formant_preserve", 50))
+    vibrato_preserve = float(profile.get("vibrato_preserve", 50))
     key = profile.get("target_key", "C")
     scale = profile.get("target_scale", "major")
 
+    is_clipped = analysis.get("clipped_risk", False)
+    is_quiet = analysis.get("too_quiet", False)
+
+    # ---- quality override label ----------------------------------------------
+    quality_override: str | None = None
+    if is_clipped:
+        quality_override = "clipped"
+    elif is_quiet:
+        quality_override = "quiet"
+
     # ---- 1. clipping protection (numpy) --------------------------------------
-    if analysis.get("clipped_risk"):
-        samples *= 0.562            # ≈ -5 dB
-        logging.info("Clipping protection: -5 dB")
+    if is_clipped:
+        samples *= 0.398            # ≈ -8 dB (stronger than v2.8's -5 dB)
+        logging.info("Clipping protection: -8 dB (v2.9 stronger reduction)")
 
     # ---- 2. loudness normalisation (numpy) -----------------------------------
     rms = float(np.sqrt(np.mean(samples ** 2)))
     TARGET_RMS = 10.0 ** (-17.0 / 20.0)  # -17 dBFS linear
 
-    if analysis.get("too_quiet") or rms < 10.0 ** (-22.0 / 20.0):
+    if is_quiet or rms < 10.0 ** (-22.0 / 20.0):
         if rms > 1e-8:
             boost = TARGET_RMS / rms
-            boost = min(boost, 16.0)        # max +24 dB
+            boost = min(boost, 12.0)        # max +21.6 dB (conservative, was +24 dB)
             samples *= boost
-            logging.info("Loudness boost: %.1f dB", 20.0 * np.log10(boost))
+            logging.info("Loudness boost: %.1f dB (v2.9 conservative)", 20.0 * np.log10(boost))
     elif rms > 10.0 ** (-14.0 / 20.0):
         cut = TARGET_RMS / rms
         samples *= cut
@@ -1228,12 +1416,18 @@ def _apply_autotune_preview(
     # ---- 3. pitch correction (librosa) ---------------------------------------
     target_notes = _compute_target_notes(key, scale)
     logging.info(
-        "Pitch correction: key=%s scale=%s target_notes=%d mode=%s "
-        "correction=%.0f%% retune_speed=%.0f",
-        key, scale, len(target_notes), style_mode, correction_amount, retune_speed,
+        "Pitch correction v2.9: key=%s scale=%s target_notes=%d mode=%s "
+        "correction=%.0f%% retune=%.0f humanize=%.0f formant=%.0f vibrato=%.0f "
+        "quality=%s",
+        key, scale, len(target_notes), style_mode, correction_amount,
+        retune_speed, humanize, formant_preserve, vibrato_preserve,
+        quality_override or "normal",
     )
     samples = _pitch_correct(
-        samples, sr, target_notes, correction_amount, retune_speed, style_mode
+        samples, sr, target_notes,
+        correction_amount, retune_speed, style_mode,
+        humanize, formant_preserve, vibrato_preserve,
+        quality_override,
     )
 
     # Convert back to pydub for the remaining pydub-native steps.
