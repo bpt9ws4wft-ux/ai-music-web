@@ -380,6 +380,22 @@ MAINSTREAM_AUTOTUNE_PRESETS = {
         "description": "紧凑快速的音高锁定 + 适度电子感。保留说唱节奏切分，同时稳定旋律线。",
         "suitable_for": ["旋律说唱", "Hip-Hop", "Trap", "Drill", "Melodic Rap"],
     },
+    "trap_polished": {
+        "preset_name": "trap_polished",
+        "preset_label": "精修 Trap",
+        "retune_speed": 86,
+        "retune_ms_equivalent": 5,
+        "correction_amount": 88,
+        "humanize": 22,
+        "flex_tune_like": "Flex Tune ~10 % — fast snap with smoother decay than hyperpop",
+        "formant_preserve": 40,
+        "vibrato_preserve": 23,
+        "pitch_tracking": "fast",
+        "best_for": "旋律说唱、强修音但保留质感的人声",
+        "risk": "中高 — 输入质量差时可能产生伪影；依赖 voiced-only 保护和 soft limiter 防破音",
+        "description": "melodic_trap 和 hyperpop 之间的精修方案：比 melodic_trap 更强，比 hyperpop 更顺滑不刺耳。",
+        "suitable_for": ["旋律说唱", "Trap", "精修人声"],
+    },
     "hyperpop": {
         "preset_name": "hyperpop",
         "preset_label": "Hyperpop 创意",
@@ -458,6 +474,7 @@ PRESET_TO_STYLE = {
     "natural_pop": "natural",
     "modern_pop": "pop",
     "melodic_trap": "trap",
+    "trap_polished": "trap",
     "hyperpop": "robotic",
     "emotional_rnb": "rnb",
     "live_tracking": "natural",
@@ -673,7 +690,8 @@ def _load_autotune_feedback_preferences() -> dict[str, dict]:
                     continue
 
                 if pname not in scores:
-                    scores[pname] = {"score": 0, "count": 0, "best_count": 0}
+                    scores[pname] = {"score": 0, "count": 0, "best_count": 0,
+                                     "too_light_count": 0, "too_fake_harsh_count": 0}
 
                 label = rec.get("label", "")
                 rating = rec.get("rating") or 0
@@ -685,8 +703,10 @@ def _load_autotune_feedback_preferences() -> dict[str, dict]:
                     scores[pname]["score"] += 1
                 elif label in ("too_fake", "too_heavy", "harsh"):
                     scores[pname]["score"] -= 2
+                    scores[pname]["too_fake_harsh_count"] += 1
                 elif label == "too_light":
                     scores[pname]["score"] -= 1
+                    scores[pname]["too_light_count"] += 1
 
                 scores[pname]["count"] += 1
     except Exception:
@@ -814,8 +834,8 @@ def _match_autotune_preset_auto(
         FEEDBACK_NUDGE_GROUPS = [
             ["live_tracking", "natural_pop"],
             ["natural_pop", "modern_pop", "emotional_rnb"],
-            ["modern_pop", "emotional_rnb", "melodic_trap"],
-            ["melodic_trap", "hyperpop"],
+            ["modern_pop", "emotional_rnb", "melodic_trap", "trap_polished"],
+            ["melodic_trap", "trap_polished", "hyperpop"],
         ]
         current_group = None
         for grp in FEEDBACK_NUDGE_GROUPS:
@@ -865,9 +885,35 @@ def _match_autotune_preset_auto(
                 else:
                     personalization_source = "无针对此预设的历史反馈"
 
+    # ---- v3.7: feedback-gap detection ---------------------------------------
+    # Pattern: melodic_trap labelled "too_light" AND hyperpop labelled
+    # "too_fake"/"harsh" → user wants something between them → trap_polished.
+    gap_detected = False
+    if preferences and not quality_override_active:
+        mt_pref = preferences.get("melodic_trap", {})
+        hp_pref = preferences.get("hyperpop", {})
+        mt_too_light = mt_pref.get("too_light_count", 0) > 0
+        hp_too_fake = hp_pref.get("too_fake_harsh_count", 0) > 0
+
+        if mt_too_light and hp_too_fake and name in ("melodic_trap", "hyperpop"):
+            gap_detected = True
+            old_name = name
+            name = "trap_polished"
+            feedback_adjustment = (
+                f"反馈缺口检测：melodic_trap 被标记为'太轻'、hyperpop 被标记为'太假/刺耳'，"
+                f"推荐中间方案 trap_polished（精修 Trap）"
+            )
+            personalization_source = (
+                f"基于 {mt_pref.get('count',0)+hp_pref.get('count',0)} 条反馈发现缺口"
+            )
+            confidence = min(100, confidence + 5)
+            source_note += "（反馈缺口已填补 → trap_polished）"
+
     preset = MAINSTREAM_AUTOTUNE_PRESETS[name].copy()
     if nudge_applied:
         preset["_feedback_nudge"] = True
+    if gap_detected:
+        preset["_gap_detected"] = True
     preset["_feedback_score"] = feedback_score
     preset["_feedback_adjustment"] = feedback_adjustment
     preset["_personalization_source"] = personalization_source
@@ -2287,7 +2333,7 @@ async def quality_check(
     # --- 3. Generate & apply five v3.2 mainstream presets --------------------
     # v3.3: uses the v3.2 Mainstream Auto-Tune Parameter Library directly,
     # skipping live_tracking (too conservative to show meaningful contrast).
-    QC_PRESET_ORDER = ["natural_pop", "modern_pop", "emotional_rnb", "melodic_trap", "hyperpop"]
+    QC_PRESET_ORDER = ["natural_pop", "modern_pop", "emotional_rnb", "melodic_trap", "trap_polished", "hyperpop"]
     results: dict[str, dict] = {}
     output_wavs: dict[str, Path] = {}
 
@@ -2617,4 +2663,68 @@ async def submit_quality_feedback(body: QualityFeedbackRequest):
         "preset_name": body.preset_name,
         "label": body.label,
         "rating": body.rating,
+    }
+
+
+# ── v3.7 debug endpoints ────────────────────────────────────────────────────
+
+
+@app.get("/debug/autotune-feedback-preferences")
+def debug_feedback_preferences():
+    """Return the full feedback preference snapshot for inspection.
+
+    Useful for verifying that A/B listening feedback is being recorded and
+    scored correctly before it influences auto-mode recommendations.
+    """
+    preferences = _load_autotune_feedback_preferences()
+
+    per_preset: dict[str, dict] = {}
+    for pname in sorted(MAINSTREAM_AUTOTUNE_PRESETS.keys()):
+        pref = preferences.get(pname, {})
+        per_preset[pname] = {
+            "score": pref.get("score", 0),
+            "count": pref.get("count", 0),
+            "too_light_count": pref.get("too_light_count", 0),
+            "too_fake_harsh_count": pref.get("too_fake_harsh_count", 0),
+            "best_count": pref.get("best_count", 0),
+        }
+
+    return {
+        "feedback_file_path": str(QUALITY_FEEDBACK_PATH),
+        "file_exists": QUALITY_FEEDBACK_PATH.exists(),
+        "record_count": sum(p.get("count", 0) for p in preferences.values()),
+        "per_preset": per_preset,
+    }
+
+
+@app.get("/debug/autotune-gap-status")
+def debug_gap_status():
+    """Check whether the feedback-gap pattern that triggers trap_polished
+    recommendation is currently active.
+
+    Returns the specific label counts for melodic_trap and hyperpop, plus
+    the gap_detected flag and the preset that would be recommended.
+    """
+    preferences = _load_autotune_feedback_preferences()
+
+    mt = preferences.get("melodic_trap", {})
+    hp = preferences.get("hyperpop", {})
+
+    mt_too_light = mt.get("too_light_count", 0)
+    hp_too_fake = hp.get("too_fake_harsh_count", 0)
+    gap_detected = mt_too_light > 0 and hp_too_fake > 0
+
+    return {
+        "melodic_trap": {
+            "too_light_count": mt_too_light,
+            "total_count": mt.get("count", 0),
+            "score": mt.get("score", 0),
+        },
+        "hyperpop": {
+            "too_fake_harsh_count": hp_too_fake,
+            "total_count": hp.get("count", 0),
+            "score": hp.get("score", 0),
+        },
+        "gap_detected": gap_detected,
+        "would_recommend": "trap_polished" if gap_detected else "normal_flow",
     }

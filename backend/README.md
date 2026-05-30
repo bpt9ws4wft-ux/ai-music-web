@@ -182,6 +182,7 @@ alongside the internal `retune_speed` (0-100, higher=faster) used by the engine.
 | `modern_pop` 现代流行 | ~26 ms | 60 % | 55 | 70 | 62 | medium | 流行、K-Pop、电子流行 |
 | `emotional_rnb` 情绪 R&B | ~58 ms | 42 % | 84 | 84 | 90 | relaxed | R&B、Soul、转音密集 |
 | `melodic_trap` 旋律 Trap | ~8 ms | 78 % | 30 | 48 | 35 | fast | 说唱、Trap、Drill |
+| `trap_polished` 精修 Trap | ~5 ms | 88 % | 22 | 40 | 23 | fast | 强修音但保留质感 |
 | `hyperpop` Hyperpop | ~0 ms | 98 % | 2 | 10 | 5 | instant | 实验电子、创意效果 |
 
 ### Preset Matching Rules (v3.2)
@@ -712,6 +713,153 @@ If ``waveform_correlation`` > 0.95 across all pairs, the vocal likely lacks
 clear pitch (spoken word, whispering) — try a **sung melody** for more
 meaningful results.
 
+## v3.7 Feedback-Gap Preset Recommendation
+
+When the A/B listening feedback reveals a consistent pattern where:
+
+- ``melodic_trap`` is labelled ``too_light`` (用户觉得修得不够强)
+- ``hyperpop`` is labelled ``too_fake`` / ``harsh`` (用户觉得太假/刺耳)
+
+the system detects a **preset gap** and recommends ``trap_polished`` — a new
+preset positioned between melodic_trap and hyperpop.
+
+### trap_polished — 精修 Trap
+
+| Parameter | Value | Rationale |
+|---|---|---|
+| `retune_ms_equivalent` | ~5 ms | Faster than melodic_trap (8ms), slower than hyperpop (0ms) |
+| `correction_amount` | 88 % | Higher than melodic_trap (78%), lower than hyperpop (98%) |
+| `humanize` | 22 | More natural than hyperpop (2), tighter than melodic_trap (30) |
+| `formant_preserve` | 40 | Between melodic_trap (48) and hyperpop (10) |
+| `vibrato_preserve` | 23 | Between melodic_trap (35) and hyperpop (5) |
+| `style_mode` | trap | Same engine mode as melodic_trap (80Hz cut, median aggregation) |
+| `pitch_tracking` | fast | Responsive tracking for rap/trap vocals |
+| **Best for** | 旋律说唱、强修音但保留质感的人声 |
+| **Risk** | 中高 — 需要 voiced-only 保护和 soft limiter 防破音 |
+
+### Gap Detection Logic
+
+```
+if melodic_trap.too_light_count > 0 AND hyperpop.too_fake_harsh_count > 0:
+    if auto-mode would select melodic_trap OR hyperpop:
+        → recommend trap_polished instead
+        → confidence +5
+        → feedback_adjustment: "反馈缺口检测：推荐中间方案 trap_polished"
+```
+
+The gap detection runs **after** quality protections (too_quiet / clipped_risk
+still take priority) and **alongside** the normal feedback nudge.  If both the
+gap and a regular nudge fire, the gap takes precedence.
+
+### Verification
+
+```bash
+# 1. Create feedback showing the gap pattern
+curl -X POST http://127.0.0.1:8000/quality-feedback \
+  -H "Content-Type: application/json" \
+  -d '{"vocal_id":"gap","preset_name":"melodic_trap","label":"too_light"}'
+curl -X POST http://127.0.0.1:8000/quality-feedback \
+  -H "Content-Type: application/json" \
+  -d '{"vocal_id":"gap","preset_name":"hyperpop","label":"too_fake"}'
+
+# 2. Auto mode with trap backing → should recommend trap_polished
+curl -v -X POST http://127.0.0.1:8000/process-vocal \
+  -F "file=@test_vocal.wav" \
+  -F "autotune_mode=auto" \
+  -F "backing_style=trap" \
+  -o /dev/null 2>&1 | grep -i "trap_polished"
+
+# 3. Check X-Autotune-Profile for feedback_adjustment
+# Should show: "反馈缺口检测：...推荐中间方案 trap_polished"
+```
+
+## Debug Endpoints (v3.7)
+
+Two read-only debug endpoints let you inspect whether A/B listening feedback
+is actually affecting auto-mode recommendations — no code changes needed.
+
+### GET /debug/autotune-feedback-preferences
+
+Returns the full feedback preference snapshot:
+
+```bash
+curl http://127.0.0.1:8000/debug/autotune-feedback-preferences | python -m json.tool
+```
+
+| Field | Meaning |
+|---|---|
+| `feedback_file_path` | Absolute path to `autotune_listening.jsonl` |
+| `file_exists` | Whether the feedback file has been created |
+| `record_count` | Total number of feedback records across all presets |
+| `per_preset.<name>.score` | Cumulative preference score |
+| `per_preset.<name>.count` | Number of records for this preset |
+| `per_preset.<name>.too_light_count` | "修太轻" labels |
+| `per_preset.<name>.too_fake_harsh_count` | "太假"/"太重"/"刺耳" labels |
+| `per_preset.<name>.best_count` | "最好听" labels |
+
+### GET /debug/autotune-gap-status
+
+Checks whether the feedback-gap pattern that triggers ``trap_polished``
+recommendation is currently active:
+
+```bash
+curl http://127.0.0.1:8000/debug/autotune-gap-status
+```
+
+Example response when gap is detected:
+
+```json
+{
+  "melodic_trap": {"too_light_count": 2, "total_count": 3, "score": -2},
+  "hyperpop": {"too_fake_harsh_count": 2, "total_count": 2, "score": -4},
+  "gap_detected": true,
+  "would_recommend": "trap_polished"
+}
+```
+
+### How to Verify Feedback Actually Affects Recommendations
+
+```bash
+# Step 1 — start clean
+del backend\feedback\autotune_listening.jsonl
+
+# Step 2 — verify empty state
+curl http://127.0.0.1:8000/debug/autotune-feedback-preferences
+# → "record_count": 0, "file_exists": false
+
+curl http://127.0.0.1:8000/debug/autotune-gap-status
+# → "gap_detected": false, "would_recommend": "normal_flow"
+
+# Step 3 — check auto mode without feedback
+curl -v -X POST http://127.0.0.1:8000/process-vocal \
+  -F "file=@test_vocal.wav" -F "autotune_mode=auto" \
+  -F "backing_style=trap" -o /dev/null 2>&1 | Select-String "preset_name"
+# → should be "melodic_trap" (no feedback, normal flow)
+
+# Step 4 — simulate gap feedback pattern
+curl -X POST http://127.0.0.1:8000/quality-feedback \
+  -H "Content-Type: application/json" \
+  -d '{"vocal_id":"vfy","preset_name":"melodic_trap","label":"too_light"}'
+curl -X POST http://127.0.0.1:8000/quality-feedback \
+  -H "Content-Type: application/json" \
+  -d '{"vocal_id":"vfy","preset_name":"hyperpop","label":"too_fake"}'
+
+# Step 5 — verify gap is now detected
+curl http://127.0.0.1:8000/debug/autotune-gap-status
+# → "gap_detected": true, "would_recommend": "trap_polished"
+
+# Step 6 — check auto mode NOW recommends trap_polished
+curl -v -X POST http://127.0.0.1:8000/process-vocal \
+  -F "file=@test_vocal.wav" -F "autotune_mode=auto" \
+  -F "backing_style=trap" -o /dev/null 2>&1 | Select-String "preset_name"
+# → should be "trap_polished" (gap detected)
+
+# Step 7 — inspect the full preference snapshot
+curl http://127.0.0.1:8000/debug/autotune-feedback-preferences
+# → per_preset.melodic_trap.too_light_count: 1
+# → per_preset.hyperpop.too_fake_harsh_count: 1
+```
+
 ## v3.6 Auto-Tune Listening Workbench
 
 The frontend A/B testing area has been upgraded into a full listening
@@ -824,8 +972,8 @@ nudge the preset selection toward what the user has historically preferred.
    |---|---|
    | Conservative | `live_tracking`, `natural_pop` |
    | Balanced | `natural_pop`, `modern_pop`, `emotional_rnb` |
-   | Aggressive | `modern_pop`, `emotional_rnb`, `melodic_trap` |
-   | Extreme | `melodic_trap`, `hyperpop` |
+   | Aggressive | `modern_pop`, `emotional_rnb`, `melodic_trap`, `trap_polished` |
+   | Extreme | `melodic_trap`, `trap_polished`, `hyperpop` |
 
    Feedback can only nudge within a group — e.g., `modern_pop` ↔ `emotional_rnb`
    but never `natural_pop` → `hyperpop`.
