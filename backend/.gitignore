@@ -2,5 +2,6 @@ venv/
 uploads/
 processed/
 feedback/
+agent_inbox/
 __pycache__/
 *.pyc

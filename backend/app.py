@@ -74,6 +74,10 @@ FEEDBACK_DIR = BASE_DIR / "feedback"
 FEEDBACK_DIR.mkdir(exist_ok=True)
 FEEDBACK_PATH = FEEDBACK_DIR / "feedback.jsonl"
 
+AGENT_INBOX_DIR = BASE_DIR / "agent_inbox"
+AGENT_INBOX_DIR.mkdir(exist_ok=True)
+AGENT_INBOX_PATH = AGENT_INBOX_DIR / "autotune_feedback_latest.md"
+
 ALLOWED_TYPES = {
     "audio/wav",
     "audio/wave",
@@ -993,6 +997,94 @@ def _match_autotune_preset_auto(
         quality_reasons.append("伴奏驱动适配：" + "；".join(beat_note_parts))
         source_note += "（伴奏特征已融入适配）"
 
+    # ---- v3.8: feedback-driven parameter tuning (Step 4b) --------------------
+    # Before snapshot for X-Autotune-Profile reporting.
+    before_params = {
+        "correction_amount": preset["correction_amount"],
+        "retune_speed": preset["retune_speed"],
+        "retune_ms_equivalent": preset.get("retune_ms_equivalent",
+                                           _retune_speed_to_ms(preset["retune_speed"])),
+        "humanize": preset["humanize"],
+        "formant_preserve": preset["formant_preserve"],
+        "vibrato_preserve": preset["vibrato_preserve"],
+    }
+    tuning_applied = False
+    tuning_reasons: list[str] = []
+
+    if preferences and not quality_override_active:
+        current_pref = preferences.get(name, {})
+        too_light_n = current_pref.get("too_light_count", 0)
+        too_fake_n = current_pref.get("too_fake_harsh_count", 0)
+
+        # ── Gap sub-case (checked first, falls through if gap not present) ──
+        if name in ("melodic_trap", "trap_polished"):
+            mt_pref = preferences.get("melodic_trap", {})
+            tp_pref = preferences.get("trap_polished", {})
+            if mt_pref.get("too_light_count", 0) > 0 and tp_pref.get("too_fake_harsh_count", 0) > 0:
+                tuning_applied = True
+                preset["correction_amount"] = 82
+                preset["retune_speed"] = 84
+                preset["humanize"] = 28
+                preset["formant_preserve"] = 48
+                preset["vibrato_preserve"] = 32
+                preset["retune_ms_equivalent"] = _retune_speed_to_ms(preset["retune_speed"])
+                tuning_reasons.append(
+                    "缺口微调：melodic_trap 太轻 + trap_polished 太假 "
+                    "→ correction=82%, retune≈6ms, humanize=28, formant=48, vibrato=32"
+                )
+
+        if not tuning_applied and too_light_n > 0 and too_fake_n == 0:
+            # User consistently wants stronger correction on this preset.
+            tuning_applied = True
+            preset["correction_amount"] = min(88, preset["correction_amount"] + 8)
+            preset["retune_speed"] = min(96, preset["retune_speed"] + 6)
+            preset["humanize"] = max(5, preset["humanize"] - 8)
+            preset["retune_ms_equivalent"] = _retune_speed_to_ms(preset["retune_speed"])
+            tuning_reasons.append(
+                f"标记为 too_light（{too_light_n} 次）"
+                f"→ correction +8, retune +6, humanize −8"
+            )
+        if not tuning_applied and too_fake_n > 0 and too_light_n == 0:
+            # User wants more natural / less harsh sound on this preset.
+            tuning_applied = True
+            preset["correction_amount"] = max(10, preset["correction_amount"] - 8)
+            preset["retune_speed"] = max(8, preset["retune_speed"] - 8)
+            preset["humanize"] = min(95, preset["humanize"] + 8)
+            preset["formant_preserve"] = min(95, preset["formant_preserve"] + 8)
+            preset["vibrato_preserve"] = min(95, preset["vibrato_preserve"] + 5)
+            preset["retune_ms_equivalent"] = _retune_speed_to_ms(preset["retune_speed"])
+            tuning_reasons.append(
+                f"标记为 too_fake/harsh（{too_fake_n} 次）"
+                f"→ correction −8, humanize/formant +8, vibrato +5"
+            )
+        if not tuning_applied and too_light_n > 0 and too_fake_n > 0:
+            # Mixed feedback — conservative balanced adjustment.
+            tuning_applied = True
+            preset["correction_amount"] = max(15, min(85, preset["correction_amount"] + 2))
+            preset["humanize"] = min(85, preset["humanize"] + 3)
+            preset["formant_preserve"] = min(90, preset["formant_preserve"] + 4)
+            tuning_reasons.append(
+                f"混合反馈（too_light ×{too_light_n} + too_fake ×{too_fake_n}）"
+                f"→ 小幅折中微调"
+            )
+
+    after_params = {
+        "correction_amount": preset["correction_amount"],
+        "retune_speed": preset["retune_speed"],
+        "retune_ms_equivalent": preset.get("retune_ms_equivalent",
+                                           _retune_speed_to_ms(preset["retune_speed"])),
+        "humanize": preset["humanize"],
+        "formant_preserve": preset["formant_preserve"],
+        "vibrato_preserve": preset["vibrato_preserve"],
+    }
+
+    preset["_feedback_parameter_adjustment"] = {
+        "applied": tuning_applied,
+        "before_params": before_params,
+        "after_params": after_params,
+        "personalization_reason": "；".join(tuning_reasons) if tuning_reasons else "无参数微调",
+    }
+
     # ---- Step 5: short-audio penalty ---------------------------------------
     if is_short:
         confidence = max(25, confidence - 20)
@@ -1066,6 +1158,10 @@ def _generate_autotune_profile(
     feedback_preference_score = preset.get("_feedback_score", 0)
     feedback_adjustment = preset.get("_feedback_adjustment", "")
     personalization_source = preset.get("_personalization_source", "无历史反馈数据")
+
+    # v3.8: feedback-driven parameter tuning
+    fb_param_adj = preset.get("_feedback_parameter_adjustment", {})
+    feedback_parameter_adjustment = fb_param_adj
 
     # ---- 2. legacy style_mode (for pitch-correction engine) ------------------
     style_mode = PRESET_TO_STYLE.get(preset_name, "natural")
@@ -1219,6 +1315,7 @@ def _generate_autotune_profile(
         "feedback_preference_score": feedback_preference_score,
         "feedback_adjustment": feedback_adjustment,
         "personalization_source": personalization_source,
+        "feedback_parameter_adjustment": feedback_parameter_adjustment,
         "backing_match": backing_match,
         "adaptation_reason": adaptation_reason,
         "reason": "；".join(reasons),
@@ -1226,6 +1323,17 @@ def _generate_autotune_profile(
         "adaptation_inputs": adaptation_inputs,
         "adaptation_summary": adaptation_summary,
         "processing_intensity": processing_intensity,
+        "final_used_params": {
+            "correction_amount": correction_amount,
+            "retune_speed": retune_speed,
+            "retune_ms_equivalent": retune_ms,
+            "humanize": humanize,
+            "formant_preserve": formant_preserve,
+            "vibrato_preserve": vibrato_preserve,
+            "style_mode": style_mode,
+            "target_key": key,
+            "target_scale": scale,
+        },
         "applied_pitch_correction": True,
         "processing_summary": processing_summary,
     }
@@ -2657,6 +2765,13 @@ async def submit_quality_feedback(body: QualityFeedbackRequest):
         "Quality feedback recorded: vocal_id=%s preset=%s label=%s rating=%s",
         body.vocal_id, body.preset_name, body.label, body.rating,
     )
+
+    # v4.2: auto-update agent inbox after every feedback record
+    try:
+        _update_agent_inbox()
+    except Exception:
+        logging.exception("Failed to update agent inbox (non-fatal)")
+
     return {
         "status": "recorded",
         "vocal_id": body.vocal_id,
@@ -2667,6 +2782,43 @@ async def submit_quality_feedback(body: QualityFeedbackRequest):
 
 
 # ── v3.7 debug endpoints ────────────────────────────────────────────────────
+
+
+@app.get("/debug/agent-inbox")
+def debug_agent_inbox():
+    """Return metadata and a preview of the agent inbox file.
+
+    The inbox file is auto-updated after every POST /quality-feedback.
+    An AI agent (Claude, Codex) can read the file directly from disk
+    at ``agent_inbox/autotune_feedback_latest.md``.
+    """
+    exists = AGENT_INBOX_PATH.exists()
+    preview = ""
+    last_updated = None
+    if exists:
+        try:
+            content = AGENT_INBOX_PATH.read_text(encoding="utf-8")
+            # Grab first 800 chars as preview
+            preview = content[:800]
+            # Extract the timestamp from the first line containing "Last updated:"
+            for line in content.split("\n"):
+                if "Last updated:" in line:
+                    last_updated = line.split("Last updated:")[-1].strip().rstrip(".")
+                    break
+        except Exception:
+            preview = "(could not read)"
+
+    return {
+        "inbox_file_path": str(AGENT_INBOX_PATH),
+        "file_exists": exists,
+        "last_updated": last_updated,
+        "preview": preview,
+        "usage": (
+            "The agent inbox file is at agent_inbox/autotune_feedback_latest.md.  "
+            "An AI agent can read it directly from disk.  "
+            "It is auto-updated after every POST /quality-feedback."
+        ),
+    }
 
 
 @app.get("/debug/autotune-feedback-preferences")
@@ -2727,4 +2879,541 @@ def debug_gap_status():
         },
         "gap_detected": gap_detected,
         "would_recommend": "trap_polished" if gap_detected else "normal_flow",
+    }
+
+
+# ── v3.9 calibration profile ────────────────────────────────────────────────
+
+# Intensity mapping for presets (used in calibration).
+_PRESET_INTENSITY = {
+    "natural_pop": "light",
+    "live_tracking": "light",
+    "modern_pop": "medium",
+    "emotional_rnb": "medium-light",
+    "melodic_trap": "medium-heavy",
+    "trap_polished": "heavy",
+    "hyperpop": "extreme",
+}
+
+
+@app.get("/debug/autotune-calibration-profile")
+def debug_calibration_profile():
+    """Compute a user calibration profile from all A/B listening feedback.
+
+    Reads every record in ``autotune_listening.jsonl`` and returns:
+
+    - ``preferred_intensity`` — which intensity band gets the most "best" votes
+    - ``preferred_retune_range_ms`` — [min, max] ms of best/good presets
+    - ``preferred_correction_range`` — [min, max] % of best/good presets
+    - ``disliked_artifacts`` — ranked list of negative patterns
+    - ``best_presets_by_vocal_type`` — per-vocal_id best preset
+    - ``total_sessions`` — number of distinct vocal_id values
+    - ``total_records`` — total feedback lines read
+    """
+    if not QUALITY_FEEDBACK_PATH.exists():
+        return {
+            "status": "no_feedback_data",
+            "hint": "Submit A/B listening feedback via /quality-feedback first.",
+        }
+
+    # ---- load all raw records -------------------------------------------------
+    records: list[dict] = []
+    try:
+        with open(QUALITY_FEEDBACK_PATH, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except Exception:
+        logging.exception("Failed to read feedback for calibration")
+        return {"status": "error", "detail": "Could not read feedback file."}
+
+    if not records:
+        return {"status": "no_records", "hint": "Feedback file exists but contains no parseable records."}
+
+    vocal_ids = sorted(set(r.get("vocal_id", "unknown") for r in records))
+
+    # ---- per-vocal_id best preset --------------------------------------------
+    best_presets_by_vocal: dict[str, str | None] = {}
+    for vid in vocal_ids:
+        vid_records = [r for r in records if r.get("vocal_id") == vid]
+        # Count "best" labels per preset for this vocal
+        preset_best: dict[str, int] = {}
+        for rec in vid_records:
+            pname = rec.get("preset_name", "")
+            label = rec.get("label", "")
+            rating = rec.get("rating") or 0
+            if pname not in preset_best:
+                preset_best[pname] = 0
+            if label == "best" or (isinstance(rating, (int, float)) and rating >= 5):
+                preset_best[pname] += 1
+            elif label == "good" or (isinstance(rating, (int, float)) and rating >= 4):
+                preset_best[pname] += 0.5  # type: ignore[operator]
+        if preset_best:
+            best_presets_by_vocal[vid] = max(preset_best, key=lambda k: preset_best[k])  # type: ignore[arg-type]
+        else:
+            best_presets_by_vocal[vid] = None
+
+    # ---- preferred intensity -------------------------------------------------
+    intensity_votes: dict[str, float] = {}
+    for rec in records:
+        pname = rec.get("preset_name", "")
+        intensity = _PRESET_INTENSITY.get(pname, "unknown")
+        label = rec.get("label", "")
+        rating = rec.get("rating") or 0
+        if label == "best" or (isinstance(rating, (int, float)) and rating >= 5):
+            intensity_votes[intensity] = intensity_votes.get(intensity, 0) + 1
+        elif label == "good" or (isinstance(rating, (int, float)) and rating >= 4):
+            intensity_votes[intensity] = intensity_votes.get(intensity, 0) + 0.5
+
+    preferred_intensity = max(intensity_votes, key=lambda k: intensity_votes[k]) if intensity_votes else "unknown"
+
+    # ---- preferred retune / correction ranges ---------------------------------
+    best_good_presets: set[str] = set()
+    for rec in records:
+        label = rec.get("label", "")
+        rating = rec.get("rating") or 0
+        if label in ("best", "good") or (isinstance(rating, (int, float)) and rating >= 4):
+            pname = rec.get("preset_name", "")
+            if pname in MAINSTREAM_AUTOTUNE_PRESETS:
+                best_good_presets.add(pname)
+
+    retune_ms_values: list[int] = []
+    correction_values: list[int] = []
+    for pname in best_good_presets:
+        pdef = MAINSTREAM_AUTOTUNE_PRESETS[pname]
+        retune_ms_values.append(int(pdef.get("retune_ms_equivalent", 0)))
+        correction_values.append(int(pdef.get("correction_amount", 0)))
+
+    preferred_retune_range_ms = [min(retune_ms_values), max(retune_ms_values)] if retune_ms_values else [0, 0]
+    preferred_correction_range = [min(correction_values), max(correction_values)] if correction_values else [0, 0]
+
+    # ---- disliked artifacts ---------------------------------------------------
+    artifact_counts: dict[str, int] = {}
+    for rec in records:
+        label = rec.get("label", "")
+        if label == "too_fake":
+            artifact_counts["artificial_character"] = artifact_counts.get("artificial_character", 0) + 1
+        elif label == "harsh":
+            artifact_counts["high_frequency_harshness"] = artifact_counts.get("high_frequency_harshness", 0) + 1
+        elif label == "too_heavy":
+            artifact_counts["over_processing"] = artifact_counts.get("over_processing", 0) + 1
+        elif label == "too_light":
+            artifact_counts["under_correction"] = artifact_counts.get("under_correction", 0) + 1
+
+    disliked_artifacts = sorted(artifact_counts.items(), key=lambda x: x[1], reverse=True)
+
+    return {
+        "status": "ok",
+        "total_sessions": len(vocal_ids),
+        "total_records": len(records),
+        "preferred_intensity": preferred_intensity,
+        "preferred_retune_range_ms": preferred_retune_range_ms,
+        "preferred_correction_range": preferred_correction_range,
+        "disliked_artifacts": [{"artifact": a, "count": c} for a, c in disliked_artifacts],
+        "best_presets_by_vocal_type": best_presets_by_vocal,
+        "intensity_votes": intensity_votes,
+        "presets_in_preferred_range": sorted(best_good_presets) if best_good_presets else [],
+    }
+
+
+# ── v4.0 AI Tuning Advisor data interface ───────────────────────────────────
+
+
+def _load_all_feedback_records() -> list[dict]:
+    """Read every parseable line from autotune_listening.jsonl."""
+    if not QUALITY_FEEDBACK_PATH.exists():
+        return []
+    records: list[dict] = []
+    try:
+        with open(QUALITY_FEEDBACK_PATH, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except Exception:
+        logging.exception("Failed to read feedback records")
+    return records
+
+
+def _update_agent_inbox():
+    """Write the current feedback snapshot as a Markdown task file for AI agents.
+
+    Called automatically after every successful POST /quality-feedback.
+    Produces ``agent_inbox/autotune_feedback_latest.md`` — a single file
+    that a Claude/Codex agent can read to get the full picture and propose
+    next tuning steps without manual curl / copy / paste.
+    """
+    preferences = _load_autotune_feedback_preferences()
+    records = _load_all_feedback_records()
+    gap = debug_gap_status()
+
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Per-preset stats table
+    preset_lines: list[str] = []
+    for pname in sorted(MAINSTREAM_AUTOTUNE_PRESETS.keys()):
+        pref = preferences.get(pname, {})
+        pdef = MAINSTREAM_AUTOTUNE_PRESETS[pname]
+        preset_lines.append(
+            f"| {pname} | {pdef['preset_label']} | "
+            f"{pref.get('score', 0)} | {pref.get('count', 0)} | "
+            f"{pref.get('too_light_count', 0)} | {pref.get('too_fake_harsh_count', 0)} | "
+            f"{pref.get('best_count', 0)} |"
+        )
+
+    # Recent 10 records
+    recent = records[-10:]
+    recent_lines: list[str] = []
+    for r in reversed(recent):
+        recent_lines.append(
+            f"  - `{r.get('vocal_id','?')}` | {r.get('preset_name','?')} | "
+            f"{r.get('label','?')} | rating={r.get('rating','?')} | "
+            f"{r.get('timestamp_utc','?')[:19]}"
+        )
+
+    md = f"""# Auto-Tune Feedback Inbox
+
+> Auto-generated by POST /quality-feedback.  Last updated: {now_utc}
+
+## Status
+
+- **Feedback file**: `{QUALITY_FEEDBACK_PATH}`
+- **Total records**: {len(records)}
+- **Distinct vocal sessions**: {len(set(r.get('vocal_id','') for r in records))}
+
+## Per-Preset Statistics
+
+| Preset | Label | Score | Count | too_light | too_fake/harsh | best |
+|---|---|---|---|---|---|---|
+{chr(10).join(preset_lines)}
+
+## Gap Status
+
+- **gap_detected**: {gap['gap_detected']}
+- **melodic_trap too_light**: {gap['melodic_trap']['too_light_count']}
+- **hyperpop too_fake/harsh**: {gap['hyperpop']['too_fake_harsh_count']}
+- **would_recommend**: {gap['would_recommend']}
+
+## Recent Feedback (last 10)
+
+{chr(10).join(recent_lines) if recent_lines else '  _(no records yet)_'}
+
+## Agent 下一步任务
+
+请根据以上真实听感反馈，提出下一轮 Auto-Tune 参数优化建议。
+
+约束：
+1. 不要改 Beat 功能。
+2. 不要重做 UI。
+3. 不要删除 feedback 文件。
+4. 不要建议训练模型或买插件。
+5. 只输出可落地到 `MAINSTREAM_AUTOTUNE_PRESETS` 的参数调整。
+6. 只输出可落地到 `_match_autotune_preset_auto()` 的匹配规则调整。
+7. 如果反馈数据不足（< 8 条），请说明需要多少额外数据。
+
+可操作的参数：
+- `correction_amount` (0-100)
+- `retune_ms_equivalent` (0-200) → 内部 `retune_speed` (0-100, 越高越快)
+- `humanize` (0-100)
+- `formant_preserve` (0-100)
+- `vibrato_preserve` (0-100)
+- `pitch_tracking` (relaxed / medium / fast / instant)
+- `style_mode` (natural / pop / rnb / trap / robotic)
+
+可操作的 preset 强度分组（安全切换边界）：
+- 极保守：live_tracking, natural_pop
+- 平衡：natural_pop, modern_pop, emotional_rnb
+- 进取：modern_pop, emotional_rnb, melodic_trap, trap_polished
+- 极限：melodic_trap, trap_polished, hyperpop
+"""
+    try:
+        AGENT_INBOX_PATH.write_text(md, encoding="utf-8")
+    except OSError:
+        logging.exception("Failed to write agent inbox file")
+
+
+@app.get("/debug/autotune-learning-dataset")
+def debug_learning_dataset():
+    """Return every feedback record enriched with its preset's full parameter set.
+
+    Each record includes the original feedback fields plus the corresponding
+    ``MAINSTREAM_AUTOTUNE_PRESETS`` parameters at the time of recording.
+    This is the AI-ready dataset — structured, labelled, ready for ingestion
+    by OpenAI / Claude / local models for pattern discovery.
+    """
+    records = _load_all_feedback_records()
+    if not records:
+        return {"status": "no_data", "record_count": 0, "dataset": []}
+
+    dataset: list[dict] = []
+    for rec in records:
+        pname = rec.get("preset_name", "")
+        pdef = MAINSTREAM_AUTOTUNE_PRESETS.get(pname, {})
+        dataset.append({
+            "vocal_id": rec.get("vocal_id", "unknown"),
+            "preset_name": pname,
+            "preset_label": pdef.get("preset_label", ""),
+            "final_used_params": {
+                "retune_ms_equivalent": pdef.get("retune_ms_equivalent"),
+                "correction_amount": pdef.get("correction_amount"),
+                "humanize": pdef.get("humanize"),
+                "formant_preserve": pdef.get("formant_preserve"),
+                "vibrato_preserve": pdef.get("vibrato_preserve"),
+                "pitch_tracking": pdef.get("pitch_tracking"),
+                "style_mode": PRESET_TO_STYLE.get(pname, ""),
+            },
+            "feedback_label": rec.get("label"),
+            "rating": rec.get("rating"),
+            "backing_style": rec.get("backing_style"),
+            "note": rec.get("note"),
+            "timestamp": rec.get("timestamp_utc"),
+        })
+
+    return {
+        "status": "ok",
+        "record_count": len(dataset),
+        "preset_count": len(MAINSTREAM_AUTOTUNE_PRESETS),
+        "description": (
+            "Each record is one A/B listening feedback entry joined with the "
+            "preset's full parameter set.  Feed this JSON to an LLM and ask: "
+            "'Which parameter ranges predict a 'best' label?' or "
+            "'What correction_amount correlates with 'too_fake' feedback?'"
+        ),
+        "dataset": dataset,
+    }
+
+
+@app.get("/debug/autotune-learning-summary")
+def debug_learning_summary():
+    """Aggregate statistics from all feedback records for AI-ready insights.
+
+    Returns per-preset average scores, label distributions, and the parameter
+    ranges associated with positive vs negative feedback — the kind of summary
+    an AI model would generate before making tuning recommendations.
+    """
+    records = _load_all_feedback_records()
+    if not records:
+        return {"status": "no_data", "record_count": 0}
+
+    # ---- per-preset average score -------------------------------------------
+    preset_stats: dict[str, dict] = {}
+    for pname in MAINSTREAM_AUTOTUNE_PRESETS:
+        preset_stats[pname] = {
+            "total": 0, "best": 0, "good": 0, "natural": 0,
+            "too_light": 0, "too_fake": 0, "harsh": 0, "too_heavy": 0,
+            "avg_rating": 0.0, "rating_sum": 0, "rating_count": 0,
+        }
+
+    for rec in records:
+        pname = rec.get("preset_name", "")
+        if pname not in preset_stats:
+            continue
+        label = rec.get("label", "")
+        rating = rec.get("rating")
+        preset_stats[pname]["total"] += 1
+        if label in preset_stats[pname]:
+            preset_stats[pname][label] += 1
+        if isinstance(rating, (int, float)):
+            preset_stats[pname]["rating_sum"] += rating
+            preset_stats[pname]["rating_count"] += 1
+
+    per_preset_summary: dict[str, dict] = {}
+    for pname, st in preset_stats.items():
+        if st["total"] == 0:
+            continue
+        per_preset_summary[pname] = {
+            "total_feedback": st["total"],
+            "positive_pct": round((st["best"] + st["good"] + st["natural"]) / st["total"] * 100, 1),
+            "negative_pct": round((st["too_light"] + st["too_fake"] + st["harsh"] + st["too_heavy"]) / st["total"] * 100, 1),
+            "best_count": st["best"],
+            "too_light_count": st["too_light"],
+            "too_fake_harsh_count": st["too_fake"] + st["harsh"],
+            "avg_rating": round(st["rating_sum"] / st["rating_count"], 2) if st["rating_count"] > 0 else None,
+            "preset_label": MAINSTREAM_AUTOTUNE_PRESETS[pname]["preset_label"],
+        }
+
+    # ---- most-liked parameter ranges ----------------------------------------
+    liked_records = [r for r in records if r.get("label") in ("best", "good", "natural")]
+    disliked_records = [r for r in records if r.get("label") in ("too_fake", "harsh", "too_heavy")]
+
+    def _param_ranges(recs: list[dict]) -> dict:
+        vals: dict[str, list] = {
+            "retune_ms": [], "correction": [], "humanize": [],
+            "formant": [], "vibrato": [],
+        }
+        for rec in recs:
+            pdef = MAINSTREAM_AUTOTUNE_PRESETS.get(rec.get("preset_name", ""), {})
+            if pdef:
+                vals["retune_ms"].append(pdef.get("retune_ms_equivalent", 0))
+                vals["correction"].append(pdef.get("correction_amount", 0))
+                vals["humanize"].append(pdef.get("humanize", 0))
+                vals["formant"].append(pdef.get("formant_preserve", 0))
+                vals["vibrato"].append(pdef.get("vibrato_preserve", 0))
+        return {
+            k: {"min": min(v) if v else 0, "max": max(v) if v else 0,
+                "avg": round(sum(v) / len(v), 1) if v else 0}
+            for k, v in vals.items()
+        }
+
+    return {
+        "status": "ok",
+        "total_records": len(records),
+        "total_sessions": len(set(r.get("vocal_id", "") for r in records)),
+        "per_preset_summary": per_preset_summary,
+        "label_distribution": {
+            label: sum(1 for r in records if r.get("label") == label)
+            for label in ["best", "good", "natural", "too_light", "too_fake", "harsh", "too_heavy"]
+        },
+        "most_liked_param_ranges": _param_ranges(liked_records),
+        "most_disliked_param_ranges": _param_ranges(disliked_records),
+        "ai_prompt_hint": (
+            "Feed this summary to an LLM: 'Given these Auto-Tune feedback "
+            "statistics, what correction_amount range is most likely to get a "
+            "'best' label? Which preset should we recommend for a vocal that "
+            "the user found too_fake on hyperpop and too_light on natural_pop?'"
+        ),
+    }
+
+
+# ── v4.1 AI Tuning Advisor Prompt Export ────────────────────────────────────
+
+
+@app.get("/debug/autotune-ai-prompt")
+def debug_ai_prompt():
+    """Generate a self-contained Chinese-language prompt for AI-assisted
+    Auto-Tune parameter analysis.
+
+    Combines the full preset library, user feedback summary, and structured
+    output instructions into a single string ready to copy-paste into any
+    LLM chat (OpenAI, Claude, local model, etc.).  No external API is called.
+    """
+    # ---- gather data --------------------------------------------------------
+    records = _load_all_feedback_records()
+    summary_data = debug_learning_summary()
+
+    # ---- build preset table -------------------------------------------------
+    preset_lines: list[str] = []
+    for pname in ["live_tracking", "natural_pop", "modern_pop", "emotional_rnb",
+                   "melodic_trap", "trap_polished", "hyperpop"]:
+        p = MAINSTREAM_AUTOTUNE_PRESETS.get(pname)
+        if not p:
+            continue
+        fb = summary_data.get("per_preset_summary", {}).get(pname, {})
+        pos = fb.get("positive_pct", 0)
+        neg = fb.get("negative_pct", 0)
+        total = fb.get("total_feedback", 0)
+        preset_lines.append(
+            f"  - {pname} ({p['preset_label']}): "
+            f"retune={p['retune_ms_equivalent']}ms "
+            f"correction={p['correction_amount']}% "
+            f"humanize={p['humanize']} "
+            f"formant={p['formant_preserve']} "
+            f"vibrato={p['vibrato_preserve']} "
+            f"pitch_tracking={p['pitch_tracking']} "
+            f"style_mode={PRESET_TO_STYLE.get(pname, '')}"
+            + (f" | 反馈{total}条 正面{pos}% 负面{neg}%" if total > 0 else " | 暂无反馈")
+        )
+
+    # ---- build feedback summary text ----------------------------------------
+    fb_text = ""
+    if records:
+        liked = summary_data.get("most_liked_param_ranges", {})
+        disliked = summary_data.get("most_disliked_param_ranges", {})
+        label_dist = summary_data.get("label_distribution", {})
+        fb_text = f"""
+## 用户历史反馈摘要
+
+共 {summary_data.get('total_records', 0)} 条反馈，{summary_data.get('total_sessions', 0)} 个试听会话。
+
+标签分布：
+  best={label_dist.get('best', 0)} good={label_dist.get('good', 0)} natural={label_dist.get('natural', 0)}
+  too_light={label_dist.get('too_light', 0)} too_fake={label_dist.get('too_fake', 0)}
+  harsh={label_dist.get('harsh', 0)} too_heavy={label_dist.get('too_heavy', 0)}
+
+用户喜欢的参数范围（best/good/natural 标签对应的 preset 参数）：
+  retune_ms: {liked.get('retune_ms', {})}
+  correction: {liked.get('correction', {})}
+  humanize: {liked.get('humanize', {})}
+  formant: {liked.get('formant', {})}
+  vibrato: {liked.get('vibrato', {})}
+
+用户不喜欢的参数范围（too_fake/harsh/too_heavy 标签对应的 preset 参数）：
+  retune_ms: {disliked.get('retune_ms', {})}
+  correction: {disliked.get('correction', {})}
+  humanize: {disliked.get('humanize', {})}
+  formant: {disliked.get('formant', {})}
+  vibrato: {disliked.get('vibrato', {})}
+"""
+    else:
+        fb_text = "\n## 用户历史反馈摘要\n\n暂无反馈数据。请先通过 A/B 听感测试收集反馈。\n"
+
+    # ---- assemble prompt ----------------------------------------------------
+    prompt = f"""# Auto-Tune 参数调优分析任务
+
+## 项目背景
+
+我们正在开发一个 AI 音乐创作工具的后端 Auto-Tune 引擎。系统根据上传的人声、伴奏特征、曲风（pop/trap/rnb/electronic）和调性（major/minor），自动选择最合适的 Auto-Tune 预设并应用真实音高校正。
+
+当前引擎使用 librosa.pyin 做 F0 检测 + 分段 phase-vocoder pitch_shift 做音高修正。所有预设参数（correction_amount / retune_speed / humanize / formant_preserve / vibrato_preserve）都实际影响输出音频，不是仅展示的参数。
+
+## 可调参数说明
+
+| 参数 | 范围 | 含义 |
+| retune_ms_equivalent | 0-200 ms | 音高修正速度，越低越快越机械 |
+| correction_amount | 0-100% | 修正量，0%=不修 100%=完全拉到目标音阶 |
+| humanize | 0-100 | 自然人声保留程度，越高越自然（时值/振幅抖动越大） |
+| formant_preserve | 0-100 | 共振峰保留，越高干声比例越大 |
+| vibrato_preserve | 0-100 | 颤音保留，越高颤音越不被修正 |
+| pitch_tracking | relaxed/medium/fast/instant | 音高追踪速度 |
+| style_mode | natural/pop/rnb/trap/robotic | 引擎模式（控制窗口大小、量化策略、滤波器、低切等） |
+
+注：retune_speed（内部 0-100，越高越快）和 retune_ms_equivalent（ms，越低越快）是同一参数的两个表示。引擎内部使用 retune_speed，用户界面展示 retune_ms_equivalent（更接近 Antares Auto-Tune 的 Retune Speed 概念）。
+
+## 当前 Preset 列表
+
+{chr(10).join(preset_lines)}
+
+## Preset 强度分组（用于安全切换）
+
+- 极保守：live_tracking, natural_pop
+- 平衡：natural_pop, modern_pop, emotional_rnb
+- 进取：modern_pop, emotional_rnb, melodic_trap, trap_polished
+- 极限：melodic_trap, trap_polished, hyperpop
+{fb_text}
+## 分析任务
+
+请根据以上数据，给出以下建议：
+1. **推荐保留**：哪些 preset 反馈良好，应该保留不变？
+2. **增强/减弱**：哪些 preset 的参数需要调整？具体怎么调？
+3. **新增中间 profile**：如果现有 preset 之间有空白区间，建议新增什么参数的中间 preset？
+4. **推荐参数范围**：根据用户偏好，给出一组全局推荐参数范围。
+5. **规则建议**：有没有可以加入自动匹配逻辑的规则？（例如 "trap 曲风 + 小调 + 反馈偏好中等修音 → 自动倾向 melodic_trap"）
+
+注意：
+- 只建议我们可以实现的参数调整方案，不要推荐买插件或训练模型。
+- 参数值必须在合理范围内（retune_ms: 0-200, correction: 0-100, humanize: 0-100, formant: 0-100, vibrato: 0-100）。
+- preset 之间的切换只能在同强度分组内进行。
+- 如果反馈数据不足，请说明需要多少额外数据才能给出可靠建议。
+"""
+
+    return {
+        "purpose": "Ask an AI model to analyze listening feedback and suggest Auto-Tune parameter changes",
+        "prompt": prompt,
+        "prompt_length_chars": len(prompt),
+        "has_feedback_data": len(records) > 0,
+        "usage": (
+            "1. Copy the 'prompt' field.  "
+            "2. Paste into any LLM chat (ChatGPT, Claude, etc.).  "
+            "3. The AI will return structured tuning recommendations.  "
+            "4. Apply the parameter suggestions to MAINSTREAM_AUTOTUNE_PRESETS in app.py."
+        ),
     }

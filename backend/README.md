@@ -773,6 +773,326 @@ curl -v -X POST http://127.0.0.1:8000/process-vocal \
 # Should show: "反馈缺口检测：...推荐中间方案 trap_polished"
 ```
 
+## v3.8 Feedback-driven Parameter Tuning
+
+v3.8 goes beyond preset switching: the system now **micro-tunes individual
+Auto-Tune parameters** based on A/B listening feedback patterns, without
+requiring new fixed presets.
+
+### Tuning Rules
+
+| Feedback pattern | Parameter adjustment |
+|---|---|
+| Preset marked `too_light` | correction +8, retune +6 (faster), humanize −8 |
+| Preset marked `too_fake` / `harsh` | correction −8, retune −8 (slower), humanize +8, formant +8, vibrato +5 |
+| Mixed (`too_light` + `too_fake`) | Conservative center adjustment: correction ±2, humanize +3, formant +4 |
+| **Gap**: `melodic_trap` too_light **+** `trap_polished` too_fake | Dynamic intermediate: corr=82%, retune≈6ms, humanize=28, formant=48, vibrato=32 |
+
+All adjustments are clamped to safe ranges and never override quality
+protections (too_quiet / clipped_risk).
+
+### X-Autotune-Profile New Fields
+
+| Field | Example | Meaning |
+|---|---|---|
+| `feedback_parameter_adjustment.applied` | `true` | Whether parameter tuning was applied |
+| `feedback_parameter_adjustment.before_params` | `{correction_amount: 78, ...}` | Pre-tuning snapshot |
+| `feedback_parameter_adjustment.after_params` | `{correction_amount: 86, ...}` | Post-tuning snapshot |
+| `feedback_parameter_adjustment.personalization_reason` | `"标记为 too_light（2 次）→ correction +8, ..."` | Why and how |
+
+### Verification
+
+```bash
+# Submit too_light feedback for melodic_trap
+curl -X POST http://127.0.0.1:8000/quality-feedback \
+  -H "Content-Type: application/json" \
+  -d '{"vocal_id":"tune","preset_name":"melodic_trap","label":"too_light"}'
+
+# Run auto mode — check X-Autotune-Profile for feedback_parameter_adjustment
+curl -v -X POST http://127.0.0.1:8000/process-vocal \
+  -F "file=@test_vocal.wav" -F "autotune_mode=auto" \
+  -F "backing_style=trap" -o /dev/null 2>&1 | Select-String "correction|personalization"
+```
+
+## v4.2 Agent Inbox for Auto-Tune Feedback
+
+Every time a user submits A/B listening feedback via ``POST /quality-feedback``,
+the backend **automatically writes** a Markdown task file to
+``agent_inbox/autotune_feedback_latest.md``.
+
+No manual curl, no copy-paste — an AI agent (Claude, Codex, etc.) can read
+this file directly from disk and propose the next tuning step.
+
+### How It Works
+
+```
+POST /quality-feedback  →  _update_agent_inbox()  →  agent_inbox/autotune_feedback_latest.md
+```
+
+### Inbox File Contents
+
+| Section | Content |
+|---|---|
+| Status | Feedback file path, total records, session count |
+| Per-Preset Statistics | Score / count / too_light / too_fake_harsh / best for all 7 presets |
+| Gap Status | gap_detected flag + would_recommend |
+| Recent Feedback | Last 10 records in reverse chronological order |
+| Agent 下一步任务 | Structured prompt with constraints, tunable parameters, and intensity groups |
+
+### GET /debug/agent-inbox
+
+```bash
+curl http://127.0.0.1:8000/debug/agent-inbox
+```
+
+Returns `file_exists`, `last_updated`, and an 800-char preview.
+
+### Using the Inbox with an AI Agent
+
+```bash
+# The agent reads the file directly — no API call needed
+cat backend/agent_inbox/autotune_feedback_latest.md
+
+# Or view via the debug endpoint
+curl http://127.0.0.1:8000/debug/agent-inbox | python -m json.tool
+```
+
+The agent task section at the bottom of the file includes:
+- 7 concrete constraints (don't change beat, don't redo UI, etc.)
+- All tunable parameter ranges
+- Preset intensity groups for safe swapping
+- Explicit instruction to propose parameter values and matching rules
+
+## v4.1 AI Tuning Advisor Prompt Export
+
+One endpoint that generates a **self-contained Chinese-language prompt**
+ready to copy-paste into any LLM chat.  No external API is called — the
+backend just assembles the preset library + feedback summary + analysis
+instructions into a single string.
+
+### GET /debug/autotune-ai-prompt
+
+```bash
+curl http://127.0.0.1:8000/debug/autotune-ai-prompt | python -m json.tool
+```
+
+Returns:
+
+```json
+{
+  "purpose": "Ask an AI model to analyze listening feedback...",
+  "prompt": "# Auto-Tune 参数调优分析任务\n\n## 项目背景\n...",
+  "prompt_length_chars": 3281,
+  "has_feedback_data": true,
+  "usage": "1. Copy the 'prompt' field. 2. Paste into any LLM chat..."
+}
+```
+
+### Prompt Contents
+
+| Section | Content |
+|---|---|
+| 项目背景 | What the system does, engine details |
+| 可调参数说明 | All 7 parameters with ranges and meanings |
+| 当前 Preset 列表 | All 7 presets with parameters + per-preset feedback stats |
+| 强度分组 | Safe-swapping boundaries |
+| 用户反馈摘要 | Label distribution, liked/disliked parameter ranges |
+| 分析任务 | 5 structured questions for the AI to answer |
+
+### Quick Export
+
+```bash
+# Save the prompt to a file
+curl http://127.0.0.1:8000/debug/autotune-ai-prompt > ai_prompt.json
+
+# Extract just the prompt text
+python -c "import json; print(json.load(open('ai_prompt.json','r',encoding='utf-8'))['prompt'])" > ai_prompt.txt
+
+# Copy and paste ai_prompt.txt into ChatGPT / Claude
+```
+
+### What the AI Will Tell You
+
+The prompt asks the AI to output:
+1. **推荐保留** — which presets to keep as-is
+2. **增强/减弱** — which presets need parameter changes
+3. **新增中间 profile** — suggested new presets between existing ones
+4. **推荐参数范围** — global recommended ranges
+5. **规则建议** — matching logic improvements
+
+The AI is explicitly instructed to only suggest parameter changes we can
+implement in code — not to recommend buying plugins or training models.
+
+## v4.0 AI Tuning Advisor Data Interface
+
+Two read-only endpoints prepare structured, labelled data for AI analysis.
+**No real AI model is connected** — these endpoints produce the dataset that
+you would feed to OpenAI, Claude, or a local model to discover tuning patterns.
+
+### GET /debug/autotune-learning-dataset
+
+Every feedback record joined with its preset's full parameter set:
+
+```bash
+curl http://127.0.0.1:8000/debug/autotune-learning-dataset | python -m json.tool
+```
+
+Each record:
+
+```json
+{
+  "vocal_id": "abc123",
+  "preset_name": "modern_pop",
+  "preset_label": "现代流行",
+  "final_used_params": {
+    "retune_ms_equivalent": 26,
+    "correction_amount": 60,
+    "humanize": 55,
+    "formant_preserve": 70,
+    "vibrato_preserve": 62,
+    "pitch_tracking": "medium",
+    "style_mode": "pop"
+  },
+  "feedback_label": "best",
+  "rating": 5,
+  "backing_style": "pop",
+  "note": null,
+  "timestamp": "2026-05-30T..."
+}
+```
+
+### GET /debug/autotune-learning-summary
+
+Aggregate statistics across all feedback:
+
+```bash
+curl http://127.0.0.1:8000/debug/autotune-learning-summary | python -m json.tool
+```
+
+| Field | Meaning |
+|---|---|
+| `per_preset_summary.<name>.positive_pct` | % of best/good/natural labels |
+| `per_preset_summary.<name>.negative_pct` | % of too_fake/harsh/too_heavy labels |
+| `label_distribution` | Global count per label type |
+| `most_liked_param_ranges` | {min, max, avg} of retune/correction/humanize/formant/vibrato for liked presets |
+| `most_disliked_param_ranges` | Same for disliked presets |
+
+### How to Use This for AI Analysis
+
+**Step 1 — accumulate feedback** by running multiple A/B listening tests.
+
+**Step 2 — export the dataset**:
+
+```bash
+curl http://127.0.0.1:8000/debug/autotune-learning-dataset > tuning_data.json
+```
+
+**Step 3 — feed to an LLM** with a prompt like:
+
+> "Here are 50 Auto-Tune parameter + user feedback records. Which
+> correction_amount range is most likely to get a 'best' label? What
+> retune_ms threshold separates 'natural' from 'too_fake' feedback?
+> Given that vocal 'abc123' got 'too_light' on natural_pop and 'best'
+> on melodic_trap, what preset should we recommend for a similar vocal?"
+
+**Step 4 — use the summary for quick insights**:
+
+```bash
+curl http://127.0.0.1:8000/debug/autotune-learning-summary
+# → most_liked_param_ranges.retune_ms: {min: 8, max: 26, avg: 17}
+# → Interpretation: users prefer retune between 8-26ms
+```
+
+## v3.9 Auto-Tune Calibration Session
+
+A structured workflow to establish stable user preferences across 3 vocal
+types, producing a ``calibration_profile`` that captures which presets and
+parameter ranges work best for different vocal timbres.
+
+### Calibration Workflow (Browser + curl)
+
+**Step 1 — prepare 3 vocal files** representing different vocal types:
+
+| File | Vocal type | Example |
+|---|---|---|
+| `rap_vocal.wav` | 低音/说唱型 | Low register, rhythmic, spoken/semi-sung |
+| `melody_vocal.wav` | 旋律演唱型 | Mid register, sustained notes, clear melody |
+| `high_vocal.wav` | 高音/副歌型 | Higher register, belted chorus, more energy |
+
+**Step 2 — for each vocal file**, run the A/B listening test in the browser:
+
+```bash
+# Start backend
+uvicorn backend.app:app --host 127.0.0.1 --port 8000
+```
+
+1. Open `index.html` in browser
+2. Upload `rap_vocal.wav` → click "A/B 听感测试"
+3. Listen to all 6 versions (natural_pop / modern_pop / emotional_rnb /
+   melodic_trap / trap_polished / hyperpop)
+4. Label each version: ★最好听 / 自然 / 不错 / 太假 / 太轻 / 太重 / 刺耳
+5. Repeat for `melody_vocal.wav` and `high_vocal.wav`
+
+**Step 3 — inspect the calibration profile**:
+
+```bash
+curl http://127.0.0.1:8000/debug/autotune-calibration-profile | python -m json.tool
+```
+
+### Calibration Profile Fields
+
+| Field | Example | Meaning |
+|---|---|---|
+| `preferred_intensity` | `"medium-heavy"` | Most-liked intensity band across all vocals |
+| `preferred_retune_range_ms` | `[5, 90]` | Retune ms range of all best/good presets |
+| `preferred_correction_range` | `[28, 88]` | Correction % range of best/good presets |
+| `disliked_artifacts` | `[{artifact:"under_correction",count:3},...]` | Ranked negative patterns |
+| `best_presets_by_vocal_type` | `{"vocal_rap":"melodic_trap",...}` | Per-vocal best preset |
+| `total_sessions` | `3` | Number of distinct vocal sessions |
+| `intensity_votes` | `{"medium-heavy":1.5,...}` | Weighted votes per intensity |
+
+### Interpreting the Calibration
+
+```bash
+# Example output analysis:
+# preferred_intensity: medium-heavy
+# → The user generally prefers melodic_trap / trap_polished level correction
+#
+# disliked_artifacts: under_correction is #1
+# → User consistently finds lighter presets too weak
+#
+# best_presets_by_vocal_type:
+#   vocal_rap → melodic_trap, vocal_melody → modern_pop, vocal_high → trap_polished
+# → Different vocal types need different presets — system should weight by register
+```
+
+### Testing the Full Calibration Flow
+
+```powershell
+# 1. Simulate 3-vocal calibration with curl
+$ids = @('vocal_rap','vocal_melody','vocal_high')
+
+# Rap vocal: prefers melodic_trap
+curl -X POST http://127.0.0.1:8000/quality-feedback -H "Content-Type: application/json" -d '{\"vocal_id\":\"vocal_rap\",\"preset_name\":\"melodic_trap\",\"label\":\"best\",\"rating\":5}'
+curl -X POST http://127.0.0.1:8000/quality-feedback -H "Content-Type: application/json" -d '{\"vocal_id\":\"vocal_rap\",\"preset_name\":\"hyperpop\",\"label\":\"harsh\"}'
+
+# Melody vocal: prefers modern_pop
+curl -X POST http://127.0.0.1:8000/quality-feedback -H "Content-Type: application/json" -d '{\"vocal_id\":\"vocal_melody\",\"preset_name\":\"modern_pop\",\"label\":\"best\",\"rating\":5}'
+curl -X POST http://127.0.0.1:8000/quality-feedback -H "Content-Type: application/json" -d '{\"vocal_id\":\"vocal_melody\",\"preset_name\":\"melodic_trap\",\"label\":\"too_heavy\"}'
+
+# High vocal: prefers trap_polished
+curl -X POST http://127.0.0.1:8000/quality-feedback -H "Content-Type: application/json" -d '{\"vocal_id\":\"vocal_high\",\"preset_name\":\"trap_polished\",\"label\":\"best\",\"rating\":5}'
+curl -X POST http://127.0.0.1:8000/quality-feedback -H "Content-Type: application/json" -d '{\"vocal_id\":\"vocal_high\",\"preset_name\":\"hyperpop\",\"label\":\"too_fake\"}'
+
+# 2. View calibration profile
+curl http://127.0.0.1:8000/debug/autotune-calibration-profile
+
+# 3. Verify
+# - preferred_intensity should be medium-heavy or heavy
+# - best_presets_by_vocal_type should show 3 entries
+# - disliked_artifacts should list harsh/too_fake
+```
+
 ## Debug Endpoints (v3.7)
 
 Two read-only debug endpoints let you inspect whether A/B listening feedback
