@@ -1,9 +1,17 @@
-"""FastAPI backend for AI Music Web v2.6.
+"""FastAPI backend for AI Music Web v3.0.
 
 Converts any accepted audio upload into a normalised WAV file, applies
 real Auto-Tune pitch correction (librosa F0 detection + per-segment
 pitch shifting toward target key/scale), and returns audio analysis,
 parameter sync, and an engine-ready Auto-Tune profile.
+
+v3.0: /process-vocal accepts an optional backing_track file.  When
+provided the backend analyses the backing track (duration, sample rate,
+peak/average dBFS, energy, low-frequency weight, brightness,
+style hint) and feeds the result into the Auto-Tune profile generator —
+all six core parameters (correction_amount, retune_speed, humanize,
+formant_preserve, vibrato_preserve, style_mode) genuinely affect the
+output audio.
 
 Pitch correction is a segment-based phase-vocoder MVP — not commercial
 grade, but genuinely changes pitch toward the target scale.
@@ -26,7 +34,7 @@ from fastapi.responses import FileResponse
 from pydub import AudioSegment
 from pydub.exceptions import CouldntDecodeError
 
-app = FastAPI(title="AI Music Web Backend", version="2.6.0")
+app = FastAPI(title="AI Music Web Backend", version="3.0.0")
 
 # Development setting: allow the local frontend to call the API.
 # For production, replace "*" with your real frontend domain.
@@ -50,6 +58,7 @@ app.add_middleware(
         "X-Too-Quiet",
         "X-Clipped-Risk",
         "X-Original-Filename",
+        "X-Backing-Analysis",
     ],
 )
 
@@ -243,6 +252,7 @@ def _analyze_backing_track(wav_path: Path) -> dict:
         bass_energy = float(np.sum(stft[bass_mask]))
         total_energy = float(np.sum(stft))
         bass_ratio = bass_energy / (total_energy + 1e-9)
+        low_frequency_weight = round(bass_ratio * 100, 1)
         if bass_ratio > 0.45:
             bass_level = "high"
         elif bass_ratio > 0.25:
@@ -252,6 +262,7 @@ def _analyze_backing_track(wav_path: Path) -> dict:
     except Exception:
         logging.exception("Backing bass-level detection failed")
         bass_level = "medium"
+        low_frequency_weight = 50.0
 
     # ---- brightness: dark / balanced / bright --------------------------------
     try:
@@ -299,6 +310,7 @@ def _analyze_backing_track(wav_path: Path) -> dict:
         "estimated_bpm": estimated_bpm,
         "energy_level": energy_level,
         "bass_level": bass_level,
+        "low_frequency_weight": low_frequency_weight,
         "brightness": brightness,
         "suggested_style": suggested_style,
         "suggested_key": "unknown",
@@ -808,6 +820,20 @@ def _generate_autotune_profile(
         "backing": backing,
     }
 
+    # ---- 8. backing_match (v3.0) ---------------------------------------------
+    if backing:
+        backing_style_label = backing.get("style", "unknown")
+        backing_conf = backing.get("confidence", 0)
+        backing_match = (
+            f"伴奏「{backing_style_label}」× 人声预设「{preset_label}」"
+            f" — 匹配置信度 {backing_conf}%"
+        )
+    else:
+        backing_match = "无伴奏输入，仅基于人声特征适配"
+
+    # ---- 9. adaptation_reason (v3.0) -----------------------------------------
+    adaptation_reason = "；".join(reasons)
+
     return {
         "mode": autotune_mode,
         "preset_name": preset_name,
@@ -826,6 +852,8 @@ def _generate_autotune_profile(
         "style_mode": style_mode,
         "style_mode_label": style_labels[style_mode],
         "vocal_quality": vocal_quality,
+        "backing_match": backing_match,
+        "adaptation_reason": adaptation_reason,
         "reason": "；".join(reasons),
         "next_step": next_step,
         "adaptation_inputs": adaptation_inputs,
@@ -1626,6 +1654,7 @@ async def process_vocal(
     backing_energy: str = Form(""),
     backing_bass: str = Form(""),
     backing_brightness: str = Form(""),
+    backing_track: UploadFile | None = File(None),
 ):
     """Accept a vocal file, convert to WAV, apply real Auto-Tune pitch
     correction (F0 detection + pitch_shift toward target key/scale),
@@ -1700,10 +1729,68 @@ async def process_vocal(
         except json.JSONDecodeError:
             logging.warning("Invalid beat_analysis JSON, ignoring")
 
-    # Build backing dict from separate form fields (v2.8 dual-input).
+    # --- 4b. Process optional backing_track file (v3.0) --------------------------
+    backing_analysis: dict | None = None
+    if backing_track is not None:
+        bt_contents = await backing_track.read()
+        if bt_contents and len(bt_contents) > 44:  # > WAV header
+            bt_suffix = Path(backing_track.filename or "backing.wav").suffix or ".wav"
+            bt_id = uuid.uuid4().hex
+            bt_raw_name = f"bt_raw_{unique_id}_{bt_id}{bt_suffix}"
+            bt_raw_path = UPLOAD_DIR / bt_raw_name
+            bt_raw_path.write_bytes(bt_contents)
+
+            bt_wav_name = f"bt_processed_{unique_id}_{bt_id}.wav"
+            bt_wav_path = PROCESSED_DIR / bt_wav_name
+
+            try:
+                # Convert backing track to WAV and capture audio metrics.
+                bt_wav_analysis = _convert_to_wav(bt_raw_path, bt_wav_path)
+                # Analyse musical features from the converted WAV.
+                bt_musical = _analyze_backing_track(bt_wav_path)
+
+                backing_analysis = {
+                    "duration_seconds": bt_wav_analysis["duration_seconds"],
+                    "sample_rate": bt_wav_analysis["sample_rate"],
+                    "channels": bt_wav_analysis["channels"],
+                    "peak_dbfs": bt_wav_analysis["peak_dbfs"],
+                    "average_dbfs": bt_wav_analysis["average_dbfs"],
+                    "energy_level": bt_musical["energy_level"],
+                    "low_frequency_weight": bt_musical["low_frequency_weight"],
+                    "brightness": bt_musical["brightness"],
+                    "rough_style_hint": bt_musical["suggested_style"],
+                    "estimated_bpm": bt_musical["estimated_bpm"],
+                    "confidence": bt_musical["confidence"],
+                }
+            except CouldntDecodeError:
+                bt_raw_path.unlink(missing_ok=True)
+                logging.warning("Could not decode backing_track — proceeding without")
+            except FileNotFoundError:
+                bt_raw_path.unlink(missing_ok=True)
+                logging.warning("ffmpeg missing for backing_track — proceeding without")
+            except Exception:
+                logging.exception("Backing-track analysis failed — proceeding without")
+
+    # Build backing dict for Auto-Tune profile generation.
+    # backing_track file analysis takes priority; form fields fill gaps.
     backing: dict | None = None
-    if any([backing_style.strip(), backing_energy.strip(),
-            backing_bass.strip(), backing_brightness.strip()]):
+    if backing_analysis is not None:
+        backing = {
+            "style": backing_analysis["rough_style_hint"],
+            "energy": backing_analysis["energy_level"],
+            "energy_level": backing_analysis["energy_level"],
+            "bass": backing_analysis["low_frequency_weight"],
+            "bass_level": "high" if backing_analysis["low_frequency_weight"] > 45
+                         else "medium" if backing_analysis["low_frequency_weight"] > 25
+                         else "low",
+            "brightness": backing_analysis["brightness"],
+            "estimated_bpm": backing_analysis["estimated_bpm"],
+            "confidence": backing_analysis["confidence"],
+            "low_frequency_weight": backing_analysis["low_frequency_weight"],
+            "_backing_analysis": backing_analysis,  # stash for header
+        }
+    elif any([backing_style.strip(), backing_energy.strip(),
+              backing_bass.strip(), backing_brightness.strip()]):
         backing = {
             "style": backing_style.strip() or None,
             "energy": backing_energy.strip() or None,
@@ -1769,6 +1856,11 @@ async def process_vocal(
     headers["X-Beat-Profile"] = quote(
         json.dumps(beat_profile, ensure_ascii=False), safe=""
     )
+
+    if backing_analysis is not None:
+        headers["X-Backing-Analysis"] = quote(
+            json.dumps(backing_analysis, ensure_ascii=False), safe=""
+        )
 
     headers["X-Profile-Id"] = unique_id
 

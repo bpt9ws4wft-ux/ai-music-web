@@ -468,13 +468,22 @@
                 <small style="color:var(--muted); display:block; font-size:11px; margin-bottom:4px;">适配来源</small>
                 <div id="profileAdaptationSummary" style="font-size:13px; font-weight:700; color:var(--accent-2);">--</div>
               </div>
+              <div style="margin-top:8px; padding:8px 10px; border-radius:8px; background:rgba(34,211,238,0.04); border:1px solid rgba(34,211,238,0.08);">
+                <small style="color:var(--accent-2); display:block; font-size:11px; margin-bottom:4px;">伴奏匹配度</small>
+                <div id="profileBackingMatch" style="font-size:13px; font-weight:700; color:var(--text);">--</div>
+              </div>
               <div id="profileBackingDetails" style="display:none; margin-top:8px; padding:8px 10px; border-radius:8px; background:rgba(34,211,238,0.05); border:1px solid rgba(34,211,238,0.10);">
-                <small style="color:var(--accent-2); display:block; font-size:11px; margin-bottom:6px;">伴奏特征</small>
-                <div style="display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:6px;">
-                  <div><small style="color:var(--muted); font-size:10px;">风格</small><div id="backingDetailStyle" style="font-size:12px; color:var(--text);">--</div></div>
+                <small style="color:var(--accent-2); display:block; font-size:11px; margin-bottom:6px;">伴奏特征（v3.0 文件分析）</small>
+                <div style="display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:6px;">
+                  <div><small style="color:var(--muted); font-size:10px;">风格提示</small><div id="backingDetailStyleHint" style="font-size:12px; color:var(--accent-2);">--</div></div>
                   <div><small style="color:var(--muted); font-size:10px;">能量</small><div id="backingDetailEnergy" style="font-size:12px; color:var(--text);">--</div></div>
-                  <div><small style="color:var(--muted); font-size:10px;">低频</small><div id="backingDetailBass" style="font-size:12px; color:var(--text);">--</div></div>
+                  <div><small style="color:var(--muted); font-size:10px;">低频权重</small><div id="backingDetailLowFreq" style="font-size:12px; color:var(--text);">--</div></div>
                   <div><small style="color:var(--muted); font-size:10px;">明亮度</small><div id="backingDetailBrightness" style="font-size:12px; color:var(--text);">--</div></div>
+                  <div><small style="color:var(--muted); font-size:10px;">BPM</small><div id="backingDetailBpm" style="font-size:12px; color:var(--text);">--</div></div>
+                  <div><small style="color:var(--muted); font-size:10px;">时长</small><div id="backingDetailDuration" style="font-size:12px; color:var(--text);">--</div></div>
+                  <div><small style="color:var(--muted); font-size:10px;">采样率</small><div id="backingDetailSampleRate" style="font-size:12px; color:var(--text);">--</div></div>
+                  <div><small style="color:var(--muted); font-size:10px;">峰值 dBFS</small><div id="backingDetailPeak" style="font-size:12px; color:var(--text);">--</div></div>
+                  <div><small style="color:var(--muted); font-size:10px;">平均 dBFS</small><div id="backingDetailAvg" style="font-size:12px; color:var(--text);">--</div></div>
                 </div>
               </div>
               <div style="margin-top:8px; padding:8px 10px; border-radius:8px; background:rgba(139,92,246,0.06); border:1px solid rgba(139,92,246,0.10);">
@@ -962,11 +971,17 @@
     const profileNextStep = document.getElementById('profileNextStep');
     const profileProcessingSummary = document.getElementById('profileProcessingSummary');
     const profileAdaptationSummary = document.getElementById('profileAdaptationSummary');
+    const profileBackingMatch = document.getElementById('profileBackingMatch');
     const profileBackingDetails = document.getElementById('profileBackingDetails');
-    const backingDetailStyle = document.getElementById('backingDetailStyle');
+    const backingDetailStyleHint = document.getElementById('backingDetailStyleHint');
     const backingDetailEnergy = document.getElementById('backingDetailEnergy');
-    const backingDetailBass = document.getElementById('backingDetailBass');
+    const backingDetailLowFreq = document.getElementById('backingDetailLowFreq');
     const backingDetailBrightness = document.getElementById('backingDetailBrightness');
+    const backingDetailBpm = document.getElementById('backingDetailBpm');
+    const backingDetailDuration = document.getElementById('backingDetailDuration');
+    const backingDetailSampleRate = document.getElementById('backingDetailSampleRate');
+    const backingDetailPeak = document.getElementById('backingDetailPeak');
+    const backingDetailAvg = document.getElementById('backingDetailAvg');
     const beatProfile = document.getElementById('beatProfile');
     const beatTargetBpm = document.getElementById('beatTargetBpm');
     const beatGrooveType = document.getElementById('beatGrooveType');
@@ -1217,21 +1232,49 @@
       profileProcessingSummary.textContent = profile.processing_summary || '--';
       // v2.8 dual-input: adaptation source
       profileAdaptationSummary.textContent = profile.adaptation_summary || '--';
-      // Backing details
+      // v3.0: backing match summary
+      const backingMatchEl = document.getElementById('profileBackingMatch');
+      if (backingMatchEl) {
+        backingMatchEl.textContent = profile.backing_match || '--';
+      }
+      // Backing details (v2.8 form-field path + v3.0 file-analysis path)
       const inputs = profile.adaptation_inputs;
       const bk = inputs && inputs.backing;
-      if (bk && (bk.style || bk.energy || bk.bass || bk.brightness)) {
-        const styleLabels = { pop: '流行', trap: 'Trap', rnb: 'R&B', electronic: '电子', unknown: '未知' };
-        const brightLabels = { dark: '暗沉', balanced: '均衡', bright: '明亮' };
-        backingDetailStyle.textContent = styleLabels[bk.style] || bk.style || '--';
-        backingDetailEnergy.textContent = bk.energy || '--';
-        backingDetailBass.textContent = bk.bass || '--';
+      const styleLabels = { pop: '流行', trap: 'Trap', rnb: 'R&B', electronic: '电子', unknown: '未知' };
+      const brightLabels = { dark: '暗沉', balanced: '均衡', bright: '明亮' };
+      if (bk && (bk.style || bk.energy || bk.bass || bk.brightness || bk.low_frequency_weight != null)) {
+        backingDetailStyleHint.textContent = (styleLabels[bk.style] || bk.style || '--') + (bk.confidence != null ? ` (${bk.confidence}%)` : '');
+        backingDetailEnergy.textContent = bk.energy_level || bk.energy || '--';
+        backingDetailLowFreq.textContent = bk.low_frequency_weight != null ? `${bk.low_frequency_weight}%` : (bk.bass || '--');
         backingDetailBrightness.textContent = brightLabels[bk.brightness] || bk.brightness || '--';
+        backingDetailBpm.textContent = bk.estimated_bpm > 0 ? String(bk.estimated_bpm) : '--';
         profileBackingDetails.style.display = 'block';
       } else {
         profileBackingDetails.style.display = 'none';
       }
       autotuneProfile.style.display = 'block';
+    }
+
+    // v3.0: display backing-track file analysis from X-Backing-Analysis header.
+    function displayBackingAnalysis(ba) {
+      const styleLabels = { pop: '流行', trap: 'Trap', rnb: 'R&B', electronic: '电子', unknown: '未知' };
+      const brightLabels = { dark: '暗沉', balanced: '均衡', bright: '明亮' };
+
+      if (ba.rough_style_hint) {
+        backingDetailStyleHint.textContent = styleLabels[ba.rough_style_hint] || ba.rough_style_hint;
+        if (ba.confidence != null) {
+          backingDetailStyleHint.textContent += ` (${ba.confidence}%)`;
+        }
+      }
+      backingDetailEnergy.textContent = ba.energy_level || '--';
+      backingDetailLowFreq.textContent = ba.low_frequency_weight != null ? `${ba.low_frequency_weight}%` : '--';
+      backingDetailBrightness.textContent = brightLabels[ba.brightness] || ba.brightness || '--';
+      backingDetailBpm.textContent = ba.estimated_bpm > 0 ? String(ba.estimated_bpm) : '--';
+      backingDetailDuration.textContent = ba.duration_seconds != null ? `${ba.duration_seconds}s` : '--';
+      backingDetailSampleRate.textContent = ba.sample_rate != null ? `${ba.sample_rate} Hz` : '--';
+      backingDetailPeak.textContent = ba.peak_dbfs != null ? `${ba.peak_dbfs} dBFS` : '--';
+      backingDetailAvg.textContent = ba.average_dbfs != null ? `${ba.average_dbfs} dBFS` : '--';
+      profileBackingDetails.style.display = 'block';
     }
 
     function displayBeatProfile(profile) {
@@ -2059,6 +2102,17 @@
             displayBeatProfile(beatProfileData);
           } catch (error) {
             console.error('Failed to parse X-Beat-Profile:', error);
+          }
+        }
+
+        // v3.0: backing-track file analysis header
+        const backingAnalysisHeader = response.headers.get('X-Backing-Analysis');
+        if (backingAnalysisHeader) {
+          try {
+            const backingAnalysis = JSON.parse(decodeURIComponent(backingAnalysisHeader));
+            displayBackingAnalysis(backingAnalysis);
+          } catch (error) {
+            console.error('Failed to parse X-Backing-Analysis:', error);
           }
         }
 
