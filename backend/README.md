@@ -1,4 +1,4 @@
-# AI Music Web Backend v2.9 (preset engine + dual-input adaptation + real profile-driven processing)
+# AI Music Web Backend v3.2 (mainstream Auto-Tune parameter library)
 
 Converts any supported audio file to a normalised WAV (16-bit, 44.1 kHz,
 mono), applies **real Auto-Tune pitch correction** using a **mainstream
@@ -148,10 +148,15 @@ and fine-tuned by audio quality analysis:
 | `style_mode` | `trap` | Legacy engine mode (`natural` / `pop` / `rnb` / `trap` / `robotic`) |
 | `style_mode_label` | `Trap` | Chinese label for the engine mode |
 | `retune_speed` | `82` | 0–100, higher = faster pitch snap |
+| `retune_ms_equivalent` | `8` | Approximate Antares-style Retune Speed in ms (lower = faster) |
 | `correction_amount` | `85` | 0–100, how much correction to apply |
 | `humanize` | `25` | 0–100, timing jitter for natural feel |
 | `formant_preserve` | `45` | 0–100, keep original vocal character |
 | `vibrato_preserve` | `28` | 0–100, keep natural vibrato |
+| `flex_tune_like` | `Flex Tune ~15%` | Human-readable Flex Tune analogy |
+| `pitch_tracking` | `fast` | Pitch tracking aggression: relaxed / medium / fast / instant |
+| `best_for` | `说唱、Trap、Drill` | Best-use scenarios for this preset |
+| `risk` | `中 — 快速修正...` | Risk assessment and caveats |
 | `target_key` | `C` | Target root key |
 | `target_scale` | `major` | Target scale |
 | `target_scale_label` | `大调` | Chinese label for the scale |
@@ -164,33 +169,67 @@ and fine-tuned by audio quality analysis:
 | `applied_pitch_correction` | `true` | v2.9: always `true` — confirms real pitch correction was applied |
 | `processing_summary` | (string) | v2.9: human-readable description of the processing pipeline |
 
-### Mainstream Preset Library (v2.6.2)
+### Mainstream Auto-Tune Parameter Library (v3.2)
 
-Six curated presets replace the old strength-band-only mapping:
+Six curated presets targeting real-world "好听、有质感" Auto-Tune sounds.
+Each preset includes `retune_ms_equivalent` (Antares-style ms, lower=faster)
+alongside the internal `retune_speed` (0-100, higher=faster) used by the engine.
 
-| Preset | retune | correction | humanize | formant | vibrato | Best for |
-|---|---|---|---|---|---|---|
-| `natural_vocal` 自然修音 | 30 | 35 % | 85 | 85 | 90 | 民谣、唱作人、不插电 |
-| `mainstream_pop` 主流流行 | 52 | 55 % | 60 | 72 | 65 | 流行、电子、舞曲 |
-| `rnb_smooth` R&B 顺滑 | 42 | 45 % | 80 | 82 | 88 | R&B、Soul、慢节奏情歌 |
-| `melodic_rap` 旋律说唱 | 65 | 70 % | 42 | 58 | 48 | 旋律说唱、Hip-Hop |
-| `trap_hard` Trap 强修 | 82 | 85 % | 25 | 45 | 28 | Trap、Drill、重电子 |
-| `robotic_hyperpop` 电音硬修 | 96 | 96 % | 8 | 20 | 10 | Hyperpop、实验电子、未来感 |
+| Preset | retune (ms) | correction | humanize | formant | vibrato | Pitch Track | Best For |
+|---|---|---|---|---|---|---|---|
+| `live_tracking` 现场录音 | ~130 ms | 18 % | 98 | 96 | 98 | relaxed | 现场、古典、播客 |
+| `natural_pop` 自然流行 | ~90 ms | 28 % | 92 | 90 | 92 | relaxed | 民谣、唱作人、不插电 |
+| `modern_pop` 现代流行 | ~26 ms | 60 % | 55 | 70 | 62 | medium | 流行、K-Pop、电子流行 |
+| `emotional_rnb` 情绪 R&B | ~58 ms | 42 % | 84 | 84 | 90 | relaxed | R&B、Soul、转音密集 |
+| `melodic_trap` 旋律 Trap | ~8 ms | 78 % | 30 | 48 | 35 | fast | 说唱、Trap、Drill |
+| `hyperpop` Hyperpop | ~0 ms | 98 % | 2 | 10 | 5 | instant | 实验电子、创意效果 |
 
-### Preset Matching Rules (ordered by priority)
+### Preset Matching Rules (v3.2)
+
+**Manual mode** (`autotune_mode=manual`):
 
 | Priority | Condition | Result |
 |---|---|---|
-| 1 | `autotune_strength` > 85 | `robotic_hyperpop` |
-| 2 | `beat_style` contains "Trap" **and** strength ≥ 60 | `trap_hard` |
-| 3 | `beat_style` contains "Trap" **and** strength < 60 | `melodic_rap` |
-| 4 | `beat_style` contains "R&B" | `rnb_smooth` |
-| 5 | strength 60–85 (no style match) | `melodic_rap` |
-| 6 | strength 30–60 (no style match) | `mainstream_pop` |
-| 7 | strength < 30 (no style match) | `natural_vocal` |
+| 1 | `too_quiet` (avg < −30 dBFS) | `live_tracking` |
+| 2 | `clipped_risk` (peak > −0.3 dBFS) | `natural_pop` |
+| 3 | `autotune_strength` > 88 | `hyperpop` |
+| 4 | strength > 75 | `melodic_trap` |
+| 5 | `beat_style` contains "Trap" | `melodic_trap` |
+| 6 | `beat_style` contains "R&B" | `emotional_rnb` |
+| 7 | strength 35–75 (default) | `modern_pop` |
+| 8 | strength 15–35 | `natural_pop` |
+| 9 | strength < 15 | `live_tracking` |
 
-Audio-quality adjustments applied on top of presets:
-- **too_quiet** → retune −10, correction −20, confidence −20
+**Auto mode** (`autotune_mode=auto`):
+
+| Input | Result |
+|---|---|
+| Backing hint = `trap` | `melodic_trap` |
+| Backing hint = `rnb` | `emotional_rnb` |
+| Backing hint = `electronic` + high pref | `hyperpop` |
+| Backing hint = `electronic` / `pop` | `modern_pop` |
+| Beat style "Trap" | `melodic_trap` |
+| Beat style "R&B" | `emotional_rnb` |
+| High pref (> 80) no genre | `hyperpop` |
+| Medium pref (52–80) | `modern_pop` |
+| Low pref (22–52) | `natural_pop` |
+| Very low pref (< 22) | `live_tracking` |
+
+**Audio-quality adjustments (both modes):**
+- **too_quiet** → retune −8, correction −18, confidence −20
+- **clipped_risk** → correction −12, confidence −15
+- **minor scale** → humanize +8, vibrato_preserve +8; +5 confidence for rnb/trap
+
+**Backing-driven micro-tuning (when backing/beat analysis available):**
+- Bass high → retune +8, correction +6
+- Bass low → retune −5
+- Energy high → correction +5
+- Energy low → humanize +10, vibrato +8
+- Bright → formant +8
+- Dark → formant −10
+- BPM ≥ 120 → retune +3
+- BPM ≤ 75 → humanize +5
+
 - **clipping_risk** → correction −15, confidence −15
 - **minor scale** → humanize +8, vibrato_preserve +8 (preserves emotional feel)
 
@@ -276,6 +315,8 @@ no Beat audio is generated yet.**
 | `POST` | `/analyze-beat` | Upload beat → musical-feature analysis (legacy, Chinese labels) |
 | `POST` | `/analyze-backing-track` | Upload backing track → musical-feature analysis (v2.8, English labels + confidence) |
 | `POST` | `/process-vocal` | Upload vocal → processed WAV + Auto-Tune profile + Beat-gen blueprint |
+| `POST` | `/quality-check` | **v3.1** — one vocal → 3 WAVs (natural / pop / robotic) for A/B comparison |
+| `GET` | `/download/{filename}` | **v3.1** — download a processed WAV from `processed/` |
 | `POST` | `/feedback` | Submit Auto-Tune quality feedback (v2.6.3) |
 | `DELETE` | `/uploads/{filename}` | Delete a temporary uploaded or processed file |
 
@@ -489,12 +530,12 @@ Future steps:
 
 ```
 backend/
-├── app.py              # FastAPI entry point
+├── app.py              # FastAPI entry point (v3.1)
 ├── requirements.txt    # Python dependencies
 ├── README.md           # This file
 ├── .gitignore
 ├── uploads/            # Raw uploaded files (auto-created)
-├── processed/          # Converted WAV files (auto-created)
+├── processed/          # Converted WAV files + quality-check outputs (auto-created)
 ├── feedback/           # User feedback records (auto-created)
 │   └── feedback.jsonl  # Labelled training data for future ML
 └── .venv/              # Virtual environment (not committed)
@@ -545,3 +586,123 @@ Each submission appends one line to `backend/feedback/feedback.jsonl`:
 - Purpose: build a labelled dataset for future personalised Auto-Tune
   strength recommendation (e.g., "given vocal quality X and beat style Y,
   predict whether the user will find the correction too light/just right/too heavy")
+
+## v3.1 Quality Check — 三版本 Auto-Tune 校准 (A/B Comparison)
+
+The ``POST /quality-check`` endpoint processes the **same vocal** through
+**three deliberately extreme parameter sets** so you can verify that the
+pitch-correction engine genuinely produces audibly different results.
+
+### Quick Start
+
+Start the backend, then:
+
+```bash
+# Windows (PowerShell) — single command, outputs 3 versions
+curl.exe -v -X POST http://127.0.0.1:8000/quality-check `
+  -F "file=@your-vocal.wav" `
+  -F "key=C" `
+  -F "scale=major" `
+  -o qc_report.json
+
+# Read the response to get download URLs
+type qc_report.json
+```
+
+### Download Each Version
+
+The JSON response contains ``versions.natural.download_url``,
+``versions.pop.download_url``, and ``versions.robotic.download_url``.
+Use them to fetch each processed WAV:
+
+```bash
+# Download all three (replace filenames from the JSON output)
+curl.exe -O http://127.0.0.1:8000/download/qc_natural_xxxxxxxx.wav
+curl.exe -O http://127.0.0.1:8000/download/qc_pop_xxxxxxxx.wav
+curl.exe -O http://127.0.0.1:8000/download/qc_robotic_xxxxxxxx.wav
+```
+
+Or use a single PowerShell snippet to parse and download:
+
+```powershell
+$report = Get-Content qc_report.json | ConvertFrom-Json
+foreach ($ver in @('natural','pop','robotic')) {
+    $fn = Split-Path $report.versions.$ver.download_url -Leaf
+    curl.exe -O "http://127.0.0.1:8000/download/$fn"
+}
+```
+
+### How the Three Versions Differ
+
+| Parameter | natural | pop | robotic |
+|---|---|---|---|
+| `correction_amount` | 15 % | 62 % | 100 % |
+| `retune_speed` | 15 | 58 | 100 |
+| `humanize` | 100 | 48 | 0 |
+| `formant_preserve` | 100 | 62 | 0 |
+| `vibrato_preserve` | 100 | 58 | 0 |
+| `style_mode` | natural | pop | robotic |
+
+**Engine effects per version:**
+
+| Engine knob | natural | pop | robotic |
+|---|---|---|---|
+| F0 blend factor | 15 % → target | 62 % → target | 100 % → hard snap |
+| Median-filter window | 25 frames (slow) | 7 frames (fast) | 1 frame (instant) |
+| Segment size | 6144 samples (~139 ms) | 4096 samples (~93 ms) | 1024 samples (~23 ms) |
+| Timing jitter | max (±47 % of step) | moderate | none |
+| Amplitude jitter | ±23 % of correction | moderate | none |
+| Dry/wet blend | 75 % dry | 46.5 % dry | 0 % dry |
+| Vibrato suppression | none | moderate | full (crushed) |
+| Stair-step quantise | no | no | yes (1.0 st) |
+| Second-pass snap | no | no | yes (10-cent residual) |
+| Tanh saturation | no | no | yes |
+| 80 Hz low-cut | no | no | yes |
+
+### Expected Audible Results
+
+**natural** — 听感几乎与原声一致。
+  - 只有 15 % 的音高混合 → 极轻微的音高微调
+  - 75 % 干声混合 → 绝大部分保留原声
+  - 最大时值抖动 → 自然呼吸感
+  - **验收标准**：很难听出修音痕迹。
+
+**pop** — 明显可感知的音高校正，但仍有人声自然感。
+  - 62 % 音高混合 → 明显拉向目标音阶
+  - 46.5 % 干声混合 → 一半原声一半处理
+  - 中速 retune → 音高平滑过渡
+  - **验收标准**：类似主流流行唱片修音效果，修了但不过分。
+
+**robotic** — 强烈电子音色，音高瞬间跳变。
+  - 100 % 音高混合 + 硬调阈值 0.35 → 全速全量
+  - 0 % 干声混合 → 完全处理信号
+  - 1024-sample 极短窗口 + 矩形包络 → 无交叉淡化
+  - 离散量化 (1.0 半音步进) + 二次残差消除 → 彻底量化
+  - Tanh 饱和 + 80 Hz 低切 → 电子感音色
+  - **验收标准**：类似 T-Pain / Hyperpop 效果。
+
+### Quantitative Comparison Metric
+
+The response includes a ``comparison`` object with three pairwise metrics:
+
+| Pair | Metric | Typical value | Meaning |
+|---|---|---|---|
+| natural vs pop | `rms_delta_db` | 0.3–1.5 dB | Moderate energy difference |
+| natural vs pop | `waveform_correlation` | 0.85–0.97 | Similar shape, some differences |
+| pop vs robotic | `rms_delta_db` | 2–6 dB | Strong energy difference |
+| pop vs robotic | `waveform_correlation` | 0.40–0.75 | Significantly different shape |
+| natural vs robotic | `rms_delta_db` | 3–8 dB | Maximum difference |
+| natural vs robotic | `waveform_correlation` | 0.30–0.65 | Very different waveforms |
+
+If ``waveform_correlation`` > 0.95 across all pairs, the vocal likely lacks
+clear pitch (spoken word, whispering) — try a **sung melody** for more
+meaningful results.
+
+### Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| All 3 sound identical | Vocal has no clear F0 (spoken, whisper) | Upload a melody with clear pitch |
+| robotic sounds too quiet | Tanh saturation + 80 Hz cut | Expected — check peak ratio in comparison |
+| natural sounds processed | Input already heavily Auto-Tuned | Use a raw/unprocessed vocal recording |
+| Server error 500 | ffmpeg not on PATH | `ffmpeg -version` → install if missing |
