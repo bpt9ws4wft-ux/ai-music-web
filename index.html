@@ -380,6 +380,35 @@
       font-size: 14px;
     }
 
+    .qc-fb-btn {
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 11px;
+      cursor: pointer;
+      background: rgba(255,255,255,0.03);
+      color: var(--muted);
+      transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+    }
+    .qc-fb-btn:hover {
+      border-color: rgba(34,211,238,0.5);
+      background: rgba(34,211,238,0.08);
+      color: var(--text);
+    }
+    .qc-fb-btn.sent {
+      border-color: var(--success);
+      background: rgba(52,211,153,0.12);
+      color: var(--success);
+      pointer-events: none;
+    }
+    .qc-version-entry {
+      margin-bottom: 8px;
+      padding: 10px;
+      border-radius: 10px;
+      background: rgba(255,255,255,0.02);
+      border: 1px solid rgba(255,255,255,0.04);
+    }
+
     @keyframes pulse {
       0%, 100% { opacity: 0.5; }
       50% { opacity: 1; }
@@ -412,6 +441,7 @@
           <audio id="audioPlayer" class="audio-player" controls preload="metadata"></audio>
           <div class="button-row">
             <button class="btn btn-secondary" id="backendProcessBtn" type="button">发送到后端处理</button>
+            <button class="btn btn-ghost" id="qualityCheckBtn" type="button">A/B 听感测试</button>
           </div>
           <div class="preview-card" style="margin-top: 12px;">
             <div class="meter-title">
@@ -551,7 +581,12 @@
               </div>
               <small id="feedbackResult" style="display:none; margin-top:8px; color:var(--success);"></small>
             </div>
-            <p class="section-copy" style="margin-top: 12px; margin-bottom: 0;">v2.9：已执行基础 Auto-Tune 音高校正 + 双输入智能适配 + 自动/手动双模 + 智能 Beat Profile 生成器。</p>
+            <div id="qualityCheckSection" style="display:none; margin-top:12px; padding:12px; border-radius:12px; background:linear-gradient(180deg, rgba(34,211,238,0.06), rgba(139,92,246,0.04)); border:1px solid rgba(34,211,238,0.14);">
+              <small style="color:var(--accent-2); font-weight:700; display:block; margin-bottom:8px;">A/B 听感测试 — 5 个版本对比</small>
+              <div id="qcVersionList"></div>
+              <small id="qcFeedbackResult" style="display:none; margin-top:8px; color:var(--success);"></small>
+            </div>
+            <p class="section-copy" style="margin-top: 12px; margin-bottom: 0;">v3.4：A/B 听感测试 + 主流预设库 + 音质校准。</p>
           </div>
         </div>
 
@@ -995,6 +1030,10 @@
     const feedbackSection = document.getElementById('feedbackSection');
     const feedbackButtons = document.getElementById('feedbackButtons');
     const feedbackResult = document.getElementById('feedbackResult');
+    const qualityCheckBtn = document.getElementById('qualityCheckBtn');
+    const qualityCheckSection = document.getElementById('qualityCheckSection');
+    const qcVersionList = document.getElementById('qcVersionList');
+    const qcFeedbackResult = document.getElementById('qcFeedbackResult');
     const tuneSliderLabel = document.getElementById('tuneSliderLabel');
     const autotuneModeBtns = document.querySelectorAll('.autotune-mode-btn');
     const beatInput = document.getElementById('beatInput');
@@ -1353,6 +1392,153 @@
       const label = btn.dataset.label;
       if (label) sendFeedback(label);
     });
+
+    // ── v3.4 A/B quality-check flow ──────────────────────────────────────────
+    let currentQCVocalId = null;
+
+    async function runQualityCheck() {
+      if (!selectedUploadFile) {
+        backendStatus.textContent = '请先选择音频文件再进行 A/B 测试';
+        return;
+      }
+
+      qualityCheckBtn.disabled = true;
+      qualityCheckBtn.textContent = '生成中…';
+      qualityCheckSection.style.display = 'none';
+      qcVersionList.innerHTML = '';
+
+      const formData = new FormData();
+      formData.append('file', selectedUploadFile);
+      formData.append('key', keySelect.value);
+      formData.append('scale', modeSelect.value);
+
+      try {
+        const response = await fetch('http://127.0.0.1:8000/quality-check', {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!response.ok) {
+          let msg = `A/B 测试失败：${response.status}`;
+          try {
+            const err = await response.json();
+            if (err.detail) msg = err.detail;
+          } catch (_) { /* keep generic */ }
+          throw new Error(msg);
+        }
+
+        const report = await response.json();
+        displayQCResults(report);
+      } catch (error) {
+        qcVersionList.innerHTML = `<small style="color:var(--danger);">${error.message}</small>`;
+        qualityCheckSection.style.display = 'block';
+        console.error('Quality-check error:', error);
+      } finally {
+        qualityCheckBtn.disabled = false;
+        qualityCheckBtn.textContent = 'A/B 听感测试';
+      }
+    }
+
+    function displayQCResults(report) {
+      currentQCVocalId = report.vocal_id;
+      qcVersionList.innerHTML = '';
+      qualityCheckSection.style.display = 'block';
+      qcFeedbackResult.style.display = 'none';
+
+      const presetLabels = {
+        natural_pop: '自然流行',
+        modern_pop: '现代流行',
+        emotional_rnb: '情绪 R&B',
+        melodic_trap: '旋律 Trap',
+        hyperpop: 'Hyperpop 创意',
+      };
+
+      const presetOrder = ['natural_pop', 'modern_pop', 'emotional_rnb', 'melodic_trap', 'hyperpop'];
+
+      for (const pname of presetOrder) {
+        const ver = report.versions[pname];
+        if (!ver) continue;
+
+        const entry = document.createElement('div');
+        entry.className = 'qc-version-entry';
+
+        const retuneMs = ver.profile.retune_ms_equivalent != null ? `~${ver.profile.retune_ms_equivalent}ms` : '';
+        const corrPct = ver.profile.correction_amount != null ? `${ver.profile.correction_amount}%` : '';
+
+        entry.innerHTML = `
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <strong style="font-size:13px;">${pname} — ${presetLabels[pname] || ver.preset_label}</strong>
+            <span style="font-size:11px; color:var(--muted);">retune ${retuneMs} · corr ${corrPct}</span>
+          </div>
+          <audio controls preload="metadata" src="http://127.0.0.1:8000${ver.download_url}" style="width:100%; height:30px; margin-bottom:6px;"></audio>
+          <div class="qc-fb-buttons" style="display:flex; gap:4px; flex-wrap:wrap;" data-preset="${pname}">
+            <button class="qc-fb-btn" data-label="best" data-rating="5">★ 最好听</button>
+            <button class="qc-fb-btn" data-label="natural">自然</button>
+            <button class="qc-fb-btn" data-label="good">不错</button>
+            <button class="qc-fb-btn" data-label="too_fake">太假</button>
+            <button class="qc-fb-btn" data-label="too_light">太轻</button>
+            <button class="qc-fb-btn" data-label="too_heavy">太重</button>
+            <button class="qc-fb-btn" data-label="harsh">刺耳</button>
+          </div>
+        `;
+
+        // Attach feedback click handlers
+        entry.querySelectorAll('.qc-fb-btn').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const preset = btn.parentElement.dataset.preset;
+            const label = btn.dataset.label;
+            const rating = btn.dataset.rating ? parseInt(btn.dataset.rating, 10) : null;
+            sendQCFeedback(preset, label, rating, btn);
+          });
+        });
+
+        qcVersionList.appendChild(entry);
+      }
+    }
+
+    async function sendQCFeedback(presetName, label, rating, clickedBtn) {
+      if (!currentQCVocalId) return;
+
+      // Disable all buttons in this version entry temporarily
+      const allBtns = clickedBtn.parentElement.querySelectorAll('.qc-fb-btn');
+      allBtns.forEach(b => { b.disabled = true; });
+
+      try {
+        const body = JSON.stringify({
+          vocal_id: currentQCVocalId,
+          preset_name: presetName,
+          label: label,
+          rating: rating,
+        });
+
+        const response = await fetch('http://127.0.0.1:8000/quality-feedback', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+        });
+
+        if (!response.ok) {
+          const err = await response.json().catch(() => ({}));
+          throw new Error(err.detail || `HTTP ${response.status}`);
+        }
+
+        // Mark clicked button as sent
+        clickedBtn.classList.add('sent');
+        clickedBtn.textContent = '✓ ' + clickedBtn.textContent.replace('✓ ', '');
+
+        qcFeedbackResult.textContent = `已记录：${presetName} → ${label}`;
+        qcFeedbackResult.style.display = 'block';
+        qcFeedbackResult.style.color = 'var(--success)';
+      } catch (error) {
+        qcFeedbackResult.textContent = `反馈提交失败：${error.message}`;
+        qcFeedbackResult.style.display = 'block';
+        qcFeedbackResult.style.color = 'var(--danger)';
+        console.error('QC feedback error:', error);
+      } finally {
+        // Re-enable
+        allBtns.forEach(b => { b.disabled = false; });
+      }
+    }
 
     function resetPitchDisplay() {
       lastPitchResult = null;
@@ -2131,6 +2317,11 @@
 
     backendProcessBtn.addEventListener('click', () => {
       processUploadedVocalWithBackend();
+    });
+
+    // ── v3.4 A/B 听感测试 ──────────────────────────────────────────────────
+    qualityCheckBtn.addEventListener('click', () => {
+      runQualityCheck();
     });
 
     // ── Beat upload / analysis ──────────────────────────────────────────────

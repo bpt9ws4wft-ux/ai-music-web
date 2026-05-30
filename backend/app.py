@@ -464,11 +464,13 @@ PRESET_TO_STYLE = {
 }
 
 
-# ── v3.1 quality-check calibration profiles ─────────────────────────────────
+# ── v3.3 quality-check calibration profiles ─────────────────────────────────
 
+# Legacy extreme-parameter profiles used for engine calibration.
+# NOTE: /quality-check now uses MAINSTREAM_AUTOTUNE_PRESETS directly;
+# these are kept for reference and backward-compatible parameter lookup.
 # These are DELIBERATELY more extreme than the mainstream presets to
-# guarantee audible contrast between natural / pop / robotic versions
-# when fed through the same pitch-correction engine.
+# guarantee audible contrast when fed through the same engine.
 
 QUALITY_CHECK_PROFILES = {
     "natural": {
@@ -607,7 +609,8 @@ def _match_autotune_preset(
 
     if clipped_risk:
         preset["correction_amount"] = max(10, preset["correction_amount"] - 12)
-        quality_reasons.append("峰值接近 0 dBFS，存在爆音风险，已降低修正量")
+        preset["formant_preserve"] = min(98, preset["formant_preserve"] + 15)
+        quality_reasons.append("峰值接近 0 dBFS，存在爆音风险，已降低修正量并提高干声比例")
         confidence = max(25, confidence - 15)
 
     # ---- Step 3: scale-based fine-tuning -----------------------------------
@@ -747,7 +750,8 @@ def _match_autotune_preset_auto(
 
     if clipped_risk:
         preset["correction_amount"] = max(10, preset["correction_amount"] - 12)
-        quality_reasons.append("峰值接近 0 dBFS，存在爆音风险，已降低修正量")
+        preset["formant_preserve"] = min(98, preset["formant_preserve"] + 15)
+        quality_reasons.append("峰值接近 0 dBFS，存在爆音风险，已降低修正量并提高干声比例")
         confidence = max(25, confidence - 15)
 
     # ---- Step 3: scale-based fine-tuning -----------------------------------
@@ -1446,6 +1450,14 @@ def _pitch_correct(
             seg_corrections = correction_st[f_start:f_end]
             semitones = float(np.median(seg_corrections) if use_median else np.mean(seg_corrections))
 
+            # v3.3: skip correction on mostly-unvoiced segments (breaths, consonants,
+            # silence).  Prevents the engine from hard-pitching non-pitched material.
+            voiced_in_seg = voiced_flag[f_start:f_end]
+            voiced_ratio = float(np.mean(voiced_in_seg)) if len(voiced_in_seg) > 0 else 0.0
+            MIN_VOICED_RATIO = 0.18
+            if voiced_ratio < MIN_VOICED_RATIO:
+                semitones = 0.0
+
             # Humanize amplitude: random variation of correction amount.
             if do_amp_jitter and jitter_scale < 0.9:
                 amp_jitter = 1.0 + rng.uniform(-0.25, 0.25) * (1.0 - jitter_scale)
@@ -1479,18 +1491,28 @@ def _pitch_correct(
         else:
             shifted = chunk.copy()
 
-        # Overlap-add envelope.
+        # Overlap-add envelope (v3.3: raised-cosine crossfade for non-robotic).
         env = np.ones(chunk_len, dtype=np.float64)
         if use_rect_env:
             # Rectangular — no crossfade, sharper transitions for robotic.
-            pass
+            # Add a 2-sample micro-fade to prevent DC clicks at boundaries.
+            if seg_start > 0 and chunk_len >= 4:
+                env[0] = 0.0
+                env[1] = 0.5
+            if end < len(samples) and chunk_len >= 4:
+                env[-2] = 0.5
+                env[-1] = 0.0
         else:
             if seg_start > 0:
                 r = min(step, chunk_len)
-                env[:r] = np.linspace(0.0, 1.0, r)
+                # Raised-cosine fade-in: 0→1, reduces phase-discontinuity clicks
+                t = np.linspace(0.0, np.pi, r)
+                env[:r] = 0.5 * (1.0 - np.cos(t))
             if end < len(samples):
                 r = min(step, chunk_len)
-                env[-r:] = np.linspace(1.0, 0.0, r)
+                # Raised-cosine fade-out: 1→0
+                t = np.linspace(0.0, np.pi, r)
+                env[-r:] = 0.5 * (1.0 + np.cos(t))
 
         out_len = min(chunk_len, len(output) - seg_start)
         output[seg_start:seg_start + out_len] += shifted[:out_len] * env[:out_len]
@@ -1544,10 +1566,15 @@ def _pitch_correct(
     dry_mix = fp * 0.75            # 0 % → 75 % dry
     output = output * (1.0 - dry_mix) + original[:len(output)] * dry_mix
 
-    # Final peak protection.
+    # v3.3: soft peak limiter (lower ceiling + gentle curve vs hard clip).
+    # Protects against intersample peaks and segment-boundary transients.
     peak = np.max(np.abs(output))
-    if peak > 0.95:
-        output *= 0.95 / peak
+    if peak > 0.92:
+        output *= 0.92 / peak
+    # Gentle saturation for any remaining overs above 0.88
+    over_mask = np.abs(output) > 0.88
+    if np.any(over_mask):
+        output[over_mask] = np.tanh(output[over_mask] * 1.08) / 1.08
 
     return output.astype(np.float32)
 
@@ -2059,15 +2086,18 @@ async def quality_check(
     key: str = Form("C"),
     scale: str = Form("major"),
 ):
-    """Generate three Auto-Tune versions of the same vocal for A/B comparison.
+    """Generate five mainstream Auto-Tune versions of the same vocal for A/B comparison.
 
-    **natural** — nearly dry (correction 15 %, max humanize, max formant)
-    **pop**      — audible correction (correction 62 %, balanced)
-    **robotic**  — hard-tuned electronic (correction 100 %, zero humanize)
+    **natural_pop**    — light correction (~90 ms retune, 28 % correction)
+    **modern_pop**      — balanced pop (~26 ms retune, 60 % correction)
+    **emotional_rnb**  — smooth R&B (~58 ms retune, 42 % correction, vibrato preserved)
+    **melodic_trap**   — fast trap (~8 ms retune, 78 % correction)
+    **hyperpop**        — creative electronic (~0 ms retune, 98 % correction)
 
-    Saves three WAV files to ``backend/processed/`` and returns a JSON
-    report with download URLs, parameter diffs, and quantitative audio
-    difference metrics (RMS delta, peak ratio, waveform correlation).
+    Uses the v3.2 Mainstream Auto-Tune Parameter Library directly.
+    Saves five WAV files to ``backend/processed/`` and returns a JSON
+    report with download URLs, per-preset profiles, and quantitative
+    audio difference metrics (RMS delta, peak ratio, waveform correlation).
 
     Use ``GET /download/{filename}`` to retrieve each file.
     """
@@ -2113,45 +2143,70 @@ async def quality_check(
             detail="ffmpeg is not installed or not on your PATH.",
         )
 
-    # --- 3. Generate & apply three profiles ---------------------------------
+    # --- 3. Generate & apply five v3.2 mainstream presets --------------------
+    # v3.3: uses the v3.2 Mainstream Auto-Tune Parameter Library directly,
+    # skipping live_tracking (too conservative to show meaningful contrast).
+    QC_PRESET_ORDER = ["natural_pop", "modern_pop", "emotional_rnb", "melodic_trap", "hyperpop"]
     results: dict[str, dict] = {}
     output_wavs: dict[str, Path] = {}
 
-    for version_name in ("natural", "pop", "robotic"):
-        qc_def = QUALITY_CHECK_PROFILES[version_name]
-        profile = _build_qc_profile(qc_def, key, scale, analysis)
+    for preset_name in QC_PRESET_ORDER:
+        pdef = MAINSTREAM_AUTOTUNE_PRESETS[preset_name]
+        profile = {
+            "preset_name": pdef["preset_name"],
+            "preset_label": pdef["preset_label"],
+            "style_mode": PRESET_TO_STYLE[preset_name],
+            "retune_speed": pdef["retune_speed"],
+            "retune_ms_equivalent": pdef.get("retune_ms_equivalent", _retune_speed_to_ms(pdef["retune_speed"])),
+            "correction_amount": pdef["correction_amount"],
+            "humanize": pdef["humanize"],
+            "formant_preserve": pdef["formant_preserve"],
+            "vibrato_preserve": pdef["vibrato_preserve"],
+            "target_key": key,
+            "target_scale": scale,
+            "target_scale_label": "小调" if scale == "minor" else "大调",
+            "confidence": 100,
+            "preset_source": "quality_check_v3.3",
+            "vocal_quality": "normal",
+        }
 
         try:
             audio = AudioSegment.from_file(wav_path)
             processed = _apply_autotune_preview(audio, profile, analysis)
-            out_name = f"qc_{version_name}_{vocal_id}.wav"
+            out_name = f"qc_{preset_name}_{vocal_id}.wav"
             out_path = PROCESSED_DIR / out_name
             processed.export(out_path, format="wav")
-            output_wavs[version_name] = out_path
+            output_wavs[preset_name] = out_path
         except Exception:
-            logging.exception("Quality-check processing failed for %s", version_name)
+            logging.exception("Quality-check processing failed for %s", preset_name)
             raise HTTPException(
                 status_code=500,
-                detail=f"Audio processing failed for {version_name} version.",
+                detail=f"Audio processing failed for {pdef['preset_label']} version.",
             )
 
-        results[version_name] = {
+        results[preset_name] = {
             "filename": out_path.name,
             "download_url": f"/download/{out_path.name}",
+            "preset_label": pdef["preset_label"],
             "profile": {
                 "preset_name": profile["preset_name"],
                 "preset_label": profile["preset_label"],
                 "style_mode": profile["style_mode"],
                 "retune_speed": profile["retune_speed"],
+                "retune_ms_equivalent": profile["retune_ms_equivalent"],
                 "correction_amount": profile["correction_amount"],
                 "humanize": profile["humanize"],
                 "formant_preserve": profile["formant_preserve"],
                 "vibrato_preserve": profile["vibrato_preserve"],
+                "pitch_tracking": pdef.get("pitch_tracking", ""),
+                "flex_tune_like": pdef.get("flex_tune_like", ""),
+                "best_for": pdef.get("best_for", ""),
+                "risk": pdef.get("risk", ""),
             },
-            "expected_character": qc_def["expected_character"],
+            "expected_character": pdef.get("description", ""),
         }
 
-    # --- 4. Compute quantitative audio differences (v3.1) -------------------
+    # --- 4. Compute quantitative audio differences (v3.3) -------------------
     try:
         import librosa
 
@@ -2182,9 +2237,11 @@ async def quality_check(
             }
 
         comparison = {
-            "natural_vs_pop": _compute_delta(waveforms["natural"], waveforms["pop"]),
-            "pop_vs_robotic": _compute_delta(waveforms["pop"], waveforms["robotic"]),
-            "natural_vs_robotic": _compute_delta(waveforms["natural"], waveforms["robotic"]),
+            "natural_pop_vs_modern_pop": _compute_delta(waveforms["natural_pop"], waveforms["modern_pop"]),
+            "modern_pop_vs_emotional_rnb": _compute_delta(waveforms["modern_pop"], waveforms["emotional_rnb"]),
+            "emotional_rnb_vs_melodic_trap": _compute_delta(waveforms["emotional_rnb"], waveforms["melodic_trap"]),
+            "melodic_trap_vs_hyperpop": _compute_delta(waveforms["melodic_trap"], waveforms["hyperpop"]),
+            "natural_pop_vs_hyperpop": _compute_delta(waveforms["natural_pop"], waveforms["hyperpop"]),
         }
     except Exception:
         logging.exception("Quantitative comparison failed — continuing without")
@@ -2205,12 +2262,14 @@ async def quality_check(
         "versions": results,
         "comparison": comparison,
         "how_to_test": (
-            "1. Download each file:  curl -O http://127.0.0.1:8000/download/qc_natural_{id}.wav  "
-            "(repeat for pop, robotic).  "
-            "2. natural — 几乎听不出修音。  "
-            "3. pop — 明显修音，但保留自然感。  "
-            "4. robotic — 强电音，音高跳变，无自然人声残留。  "
-            "5. If natural ≈ robotic, the vocal may lack clear pitch (try a sung melody)."
+            "1. Download each file:  curl -O http://127.0.0.1:8000/download/qc_natural_pop_{id}.wav  "
+            "(repeat for modern_pop, emotional_rnb, melodic_trap, hyperpop).  "
+            "2. natural_pop — 几乎听不出修音。  "
+            "3. modern_pop — 稳定明亮的主流流行修音。  "
+            "4. emotional_rnb — 保留转音和颤音。  "
+            "5. melodic_trap — 快速音高锁定，明显的修音感。  "
+            "6. hyperpop — 强电子音色，创意效果。  "
+            "7. If natural_pop ≈ hyperpop, the vocal may lack clear pitch (try a sung melody)."
         ).format(id=vocal_id),
     }
 
@@ -2301,3 +2360,98 @@ async def submit_feedback(body: FeedbackRequest):
 
     logging.info("Feedback recorded: profile_id=%s feedback=%s", body.profile_id, body.feedback)
     return {"status": "recorded", "profile_id": body.profile_id, "feedback": body.feedback}
+
+
+# ── v3.4 quality-check A/B listening feedback loop ─────────────────────────
+
+QUALITY_FEEDBACK_PATH = FEEDBACK_DIR / "autotune_listening.jsonl"
+
+VALID_QC_LABELS = {"best", "too_fake", "too_light", "too_heavy", "harsh", "natural", "good"}
+
+VALID_QC_RATINGS = {1, 2, 3, 4, 5}
+
+
+class QualityFeedbackRequest(BaseModel):
+    vocal_id: str
+    preset_name: str
+    rating: int | None = None
+    label: str | None = None
+    note: str | None = None
+    backing_style: str | None = None
+
+
+@app.post("/quality-feedback")
+async def submit_quality_feedback(body: QualityFeedbackRequest):
+    """Record A/B listening feedback for a quality-check preset version.
+
+    Accepts a JSON body with:
+    - ``vocal_id``: the vocal session ID from ``/quality-check``
+    - ``preset_name``: one of natural_pop / modern_pop / emotional_rnb /
+      melodic_trap / hyperpop
+    - ``rating``: 1–5 (optional)
+    - ``label``: best / too_fake / too_light / too_heavy / harsh / natural / good
+    - ``note``: free-text comment (optional)
+    - ``backing_style``: pop / trap / rnb / electronic / unknown (optional)
+
+    Appends one JSONL line to ``backend/feedback/autotune_listening.jsonl``.
+    This data will power future personalised Auto-Tune parameter recommendation.
+    """
+    # Validate label if provided.
+    if body.label is not None and body.label not in VALID_QC_LABELS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid label: {body.label!r}. "
+                   f"Must be one of {sorted(VALID_QC_LABELS)}.",
+        )
+
+    # Validate rating if provided.
+    if body.rating is not None and body.rating not in VALID_QC_RATINGS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid rating: {body.rating}. Must be 1–5.",
+        )
+
+    # Validate preset_name.
+    if body.preset_name not in MAINSTREAM_AUTOTUNE_PRESETS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown preset: {body.preset_name!r}. "
+                   f"Must be one of {sorted(MAINSTREAM_AUTOTUNE_PRESETS.keys())}.",
+        )
+
+    record: dict = {
+        "vocal_id": body.vocal_id,
+        "preset_name": body.preset_name,
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    if body.rating is not None:
+        record["rating"] = body.rating
+    if body.label is not None:
+        record["label"] = body.label
+    if body.note is not None:
+        record["note"] = body.note
+    if body.backing_style is not None:
+        record["backing_style"] = body.backing_style
+
+    try:
+        with open(QUALITY_FEEDBACK_PATH, "a", encoding="utf-8") as fh:
+            json.dump(record, fh, ensure_ascii=False)
+            fh.write("\n")
+    except OSError as exc:
+        logging.exception("Failed to write quality-feedback record")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not save feedback: {exc}",
+        )
+
+    logging.info(
+        "Quality feedback recorded: vocal_id=%s preset=%s label=%s rating=%s",
+        body.vocal_id, body.preset_name, body.label, body.rating,
+    )
+    return {
+        "status": "recorded",
+        "vocal_id": body.vocal_id,
+        "preset_name": body.preset_name,
+        "label": body.label,
+        "rating": body.rating,
+    }

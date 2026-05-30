@@ -140,7 +140,7 @@ and fine-tuned by audio quality analysis:
 | Field | Example | Description |
 |---|---|---|
 | `mode` | `auto` | `manual` or `auto` (v2.8) |
-| `preset_name` | `trap_hard` | Matched preset ID (v2.6.2) |
+| `preset_name` | `melodic_trap` | Matched preset ID (v3.2) |
 | `preset_label` | `Trap 强修` | Chinese preset label |
 | `suitable_for` | `["Trap","Drill"]` | Genres this preset is designed for |
 | `preset_source` | `auto_adaptation` | `mainstream_rule_preset` or `auto_adaptation` |
@@ -163,11 +163,11 @@ and fine-tuned by audio quality analysis:
 | `vocal_quality` | `normal` | Quality assessment |
 | `reason` | (string) | Why these parameters were chosen |
 | `next_step` | (string) | Suggested next action for the user |
-| `adaptation_inputs` | (object) | v2.8 dual-input: `vocal`, `style_source`, `backing` sub-fields |
+| `adaptation_inputs` | (object) | v3.0 dual-input: `vocal`, `style_source`, `backing` sub-fields |
 | `adaptation_summary` | (string) | v2.8: `仅人声` / `人声 + 手动曲风` / `人声 + 伴奏分析` |
-| `processing_intensity` | `medium` | v2.9: `low` / `medium` / `high` — how aggressive the processing is |
-| `applied_pitch_correction` | `true` | v2.9: always `true` — confirms real pitch correction was applied |
-| `processing_summary` | (string) | v2.9: human-readable description of the processing pipeline |
+| `processing_intensity` | `medium` | v3.3: `low` / `medium` / `high` — how aggressive the processing is |
+| `applied_pitch_correction` | `true` | v3.3: always `true` — confirms real pitch correction was applied |
+| `processing_summary` | (string) | v3.3: human-readable description of the processing pipeline |
 
 ### Mainstream Auto-Tune Parameter Library (v3.2)
 
@@ -247,10 +247,10 @@ matching key and instead selects the best preset autonomously:
 
 | Input | Weight | Effect |
 |---|---|---|
-| Beat style | Primary | Trap → trap_hard / melodic_rap; R&B → rnb_smooth; 电子 → mainstream_pop |
-| Scale (major/minor) | Primary | minor + Trap → trap_hard; minor + R&B → rnb_smooth; major + 电子 → mainstream_pop |
-| Audio quality | Override | too_quiet → force natural_vocal; clipped_risk → force mainstream_pop |
-| Strength slider | Nudge | High pref (> 75) + 电子 → robotic_hyperpop; Low pref (< 35) → natural_vocal |
+| Beat style | Primary | Trap → melodic_trap / melodic_trap; R&B → emotional_rnb; 电子 → modern_pop |
+| Scale (major/minor) | Primary | minor + Trap → melodic_trap; minor + R&B → emotional_rnb; major + 电子 → modern_pop |
+| Audio quality | Override | too_quiet → force natural_pop; clipped_risk → force modern_pop |
+| Strength slider | Nudge | High pref (> 75) + 电子 → hyperpop; Low pref (< 35) → natural_pop |
 | Duration < 5 s | Penalty | Confidence −20, mark as draft-grade |
 
 Auto mode produces the same profile fields as manual mode, with these differences:
@@ -315,8 +315,9 @@ no Beat audio is generated yet.**
 | `POST` | `/analyze-beat` | Upload beat → musical-feature analysis (legacy, Chinese labels) |
 | `POST` | `/analyze-backing-track` | Upload backing track → musical-feature analysis (v2.8, English labels + confidence) |
 | `POST` | `/process-vocal` | Upload vocal → processed WAV + Auto-Tune profile + Beat-gen blueprint |
-| `POST` | `/quality-check` | **v3.1** — one vocal → 3 WAVs (natural / pop / robotic) for A/B comparison |
-| `GET` | `/download/{filename}` | **v3.1** — download a processed WAV from `processed/` |
+| `POST` | `/quality-check` | **v3.3** — one vocal → 5 WAVs (natural_pop / modern_pop / emotional_rnb / melodic_trap / hyperpop) for A/B comparison |
+| `GET` | `/download/{filename}` | **v3.3** — download a processed WAV from `processed/` |
+| `POST` | `/quality-feedback` | **v3.4** — submit A/B listening label for a quality-check version |
 | `POST` | `/feedback` | Submit Auto-Tune quality feedback (v2.6.3) |
 | `DELETE` | `/uploads/{filename}` | Delete a temporary uploaded or processed file |
 
@@ -362,7 +363,7 @@ are applied on top of the normal auto-adaptation rules:
 
 Quality overrides (too_quiet, clipped_risk) still take priority over beat-driven adjustments.
 
-### Backing-Track Analysis Endpoint (v2.8 dual-input)
+### Backing-Track Analysis Endpoint (v3.0 dual-input)
 
 **`POST /analyze-backing-track`** — upload a backing track to get musical features
 with English naming conventions and a confidence score:
@@ -418,19 +419,19 @@ matcher, and backing-driven refinement (bass → retune/correction,
 energy → humanize, brightness → formant, BPM → retune/humanize) is applied
 identically to the beat-analysis path.
 
-### Profile-Driven Processing (v2.9)
+### Profile-Driven Processing (v3.3)
 
 All Auto-Tune profile parameters now genuinely affect the audio output.
 Different presets produce **audibly different** results:
 
 | Preset | retune | correction | humanize | formant | vibrato | Audible character |
 |---|---|---|---|---|---|---|
-| `natural_vocal` | 30 | 35% | 85 | 85 | 90 | Very subtle, 5120-sample segments, highest dry blend |
-| `rnb_smooth` | 42 | 45% | 80 | 82 | 88 | Gentle snap, 4608-sample segments, vibrato preserved |
-| `mainstream_pop` | 52 | 55% | 60 | 72 | 65 | Balanced correction, 4096-sample segments |
-| `melodic_rap` | 65 | 70% | 42 | 58 | 48 | 3072-sample segs, hard-tune, median aggregation |
-| `trap_hard` | 82 | 85% | 25 | 45 | 28 | 3072-sample segs + 80Hz low-cut, deep hard-tune |
-| `robotic_hyperpop` | 96 | 96% | 8 | 20 | 10 | 2048-sample segs, stair-step quantise, near-zero dry |
+| `natural_pop` | 30 | 35% | 85 | 85 | 90 | Very subtle, 5120-sample segments, highest dry blend |
+| `emotional_rnb` | 42 | 45% | 80 | 82 | 88 | Gentle snap, 4608-sample segments, vibrato preserved |
+| `modern_pop` | 52 | 55% | 60 | 72 | 65 | Balanced correction, 4096-sample segments |
+| `melodic_trap` | 65 | 70% | 42 | 58 | 48 | 3072-sample segs, hard-tune, median aggregation |
+| `melodic_trap` | 82 | 85% | 25 | 45 | 28 | 3072-sample segs + 80Hz low-cut, deep hard-tune |
+| `hyperpop` | 96 | 96% | 8 | 20 | 10 | 2048-sample segs, stair-step quantise, near-zero dry |
 
 **How each parameter affects the audio:**
 
@@ -611,98 +612,184 @@ type qc_report.json
 
 ### Download Each Version
 
-The JSON response contains ``versions.natural.download_url``,
-``versions.pop.download_url``, and ``versions.robotic.download_url``.
+The JSON response contains ``versions.natural_pop.download_url``,
+``versions.modern_pop.download_url``, ``versions.emotional_rnb.download_url``,
+``versions.melodic_trap.download_url``, and ``versions.hyperpop.download_url``.
 Use them to fetch each processed WAV:
 
 ```bash
-# Download all three (replace filenames from the JSON output)
-curl.exe -O http://127.0.0.1:8000/download/qc_natural_xxxxxxxx.wav
-curl.exe -O http://127.0.0.1:8000/download/qc_pop_xxxxxxxx.wav
-curl.exe -O http://127.0.0.1:8000/download/qc_robotic_xxxxxxxx.wav
+# Download all five (replace filenames from the JSON output)
+curl.exe -O http://127.0.0.1:8000/download/qc_natural_pop_xxxxxxxx.wav
+curl.exe -O http://127.0.0.1:8000/download/qc_modern_pop_xxxxxxxx.wav
+curl.exe -O http://127.0.0.1:8000/download/qc_emotional_rnb_xxxxxxxx.wav
+curl.exe -O http://127.0.0.1:8000/download/qc_melodic_trap_xxxxxxxx.wav
+curl.exe -O http://127.0.0.1:8000/download/qc_hyperpop_xxxxxxxx.wav
 ```
 
 Or use a single PowerShell snippet to parse and download:
 
 ```powershell
 $report = Get-Content qc_report.json | ConvertFrom-Json
-foreach ($ver in @('natural','pop','robotic')) {
-    $fn = Split-Path $report.versions.$ver.download_url -Leaf
+foreach ($preset in @('natural_pop','modern_pop','emotional_rnb','melodic_trap','hyperpop')) {
+    $fn = Split-Path $report.versions.$preset.download_url -Leaf
     curl.exe -O "http://127.0.0.1:8000/download/$fn"
 }
 ```
 
-### How the Three Versions Differ
+### How the Five Versions Differ
 
-| Parameter | natural | pop | robotic |
-|---|---|---|---|
-| `correction_amount` | 15 % | 62 % | 100 % |
-| `retune_speed` | 15 | 58 | 100 |
-| `humanize` | 100 | 48 | 0 |
-| `formant_preserve` | 100 | 62 | 0 |
-| `vibrato_preserve` | 100 | 58 | 0 |
-| `style_mode` | natural | pop | robotic |
+Uses the v3.2 Mainstream Auto-Tune Parameter Library directly.
+Each version writes a file named `qc_{preset_name}_{vocal_id}.wav`.
 
-**Engine effects per version:**
+| Parameter | natural_pop | modern_pop | emotional_rnb | melodic_trap | hyperpop |
+|---|---|---|---|---|---|
+| `retune_ms` | ~90 ms | ~26 ms | ~58 ms | ~8 ms | ~0 ms |
+| `correction_amount` | 28 % | 60 % | 42 % | 78 % | 98 % |
+| `humanize` | 92 | 55 | 84 | 30 | 2 |
+| `formant_preserve` | 90 | 70 | 84 | 48 | 10 |
+| `vibrato_preserve` | 92 | 62 | 90 | 35 | 5 |
+| `pitch_tracking` | relaxed | medium | relaxed | fast | instant |
+| `style_mode` | natural | pop | rnb | trap | robotic |
 
-| Engine knob | natural | pop | robotic |
-|---|---|---|---|
-| F0 blend factor | 15 % → target | 62 % → target | 100 % → hard snap |
-| Median-filter window | 25 frames (slow) | 7 frames (fast) | 1 frame (instant) |
-| Segment size | 6144 samples (~139 ms) | 4096 samples (~93 ms) | 1024 samples (~23 ms) |
-| Timing jitter | max (±47 % of step) | moderate | none |
-| Amplitude jitter | ±23 % of correction | moderate | none |
-| Dry/wet blend | 75 % dry | 46.5 % dry | 0 % dry |
-| Vibrato suppression | none | moderate | full (crushed) |
-| Stair-step quantise | no | no | yes (1.0 st) |
-| Second-pass snap | no | no | yes (10-cent residual) |
-| Tanh saturation | no | no | yes |
-| 80 Hz low-cut | no | no | yes |
+**Engine effects per preset:**
+
+| Engine knob | natural_pop | modern_pop | emotional_rnb | melodic_trap | hyperpop |
+|---|---|---|---|---|---|
+| F0 blend | 28 % | 60 % | 42 % | 78 % | 100 % hard |
+| Median-filter | 25 frames | 7 frames | 15 frames | 3 frames | 1 frame |
+| Segment size | 6144 smp | 4096 smp | 5120 smp | 2560 smp | 1024 smp |
+| Dry/wet blend | 75 % dry | 52.5 % dry | 63 % dry | 36 % dry | 7.5 % dry |
+| Vibrato preserve | full | moderate | full | low | crushed |
+| Crossfade | raised-cosine | raised-cosine | raised-cosine | raised-cosine | 2-smp micro |
+| Stair-step quant | no | no | no | 0.5 st | 1.0 st |
+| Tanh saturation | no | no | no | no | yes |
+| 80 Hz low-cut | no | no | no | yes | yes |
 
 ### Expected Audible Results
 
-**natural** — 听感几乎与原声一致。
-  - 只有 15 % 的音高混合 → 极轻微的音高微调
+**natural_pop** — 几乎听不出修音。
+  - ~90 ms retune + 92 humanize + 90 vibrato → 极自然
   - 75 % 干声混合 → 绝大部分保留原声
-  - 最大时值抖动 → 自然呼吸感
-  - **验收标准**：很难听出修音痕迹。
+  - **验收标准**：A/B 对比与原声几乎无差异。
 
-**pop** — 明显可感知的音高校正，但仍有人声自然感。
-  - 62 % 音高混合 → 明显拉向目标音阶
-  - 46.5 % 干声混合 → 一半原声一半处理
-  - 中速 retune → 音高平滑过渡
-  - **验收标准**：类似主流流行唱片修音效果，修了但不过分。
+**modern_pop** — 稳定、明亮、有控制的主流流行修音。
+  - ~26 ms retune + 60 % correction → 明显但不过度
+  - 52.5 % 干声混合 → 平衡处理和原声
+  - **验收标准**：类似 Billbord 流行唱片修音效果。
 
-**robotic** — 强烈电子音色，音高瞬间跳变。
-  - 100 % 音高混合 + 硬调阈值 0.35 → 全速全量
-  - 0 % 干声混合 → 完全处理信号
-  - 1024-sample 极短窗口 + 矩形包络 → 无交叉淡化
-  - 离散量化 (1.0 半音步进) + 二次残差消除 → 彻底量化
-  - Tanh 饱和 + 80 Hz 低切 → 电子感音色
-  - **验收标准**：类似 T-Pain / Hyperpop 效果。
+**emotional_rnb** — 转音和滑音完整保留，柔和自然。
+  - ~58 ms retune + 84 humanize + 90 vibrato → 尊重即兴
+  - 63 % 干声混合 → 大量原声保留
+  - **验收标准**：转音/滑音段与原声几乎一致。
+
+**melodic_trap** — 快速音高锁定，紧凑有力。
+  - ~8 ms retune + 78 % correction → 明显的快速修正
+  - 36 % 干声 + 80Hz 低切 → 修音感清晰但不破音
+  - **验收标准**：类似旋律说唱的修音质感。
+
+**hyperpop** — 完全电子化音色，创意效果。
+  - 0 ms retune + 98 % correction → 即时量化
+  - 7.5 % 干声 + tanh 饱和 + 阶梯量化 + 二次残差
+  - **验收标准**：明显的 T-Pain / Hyperpop 电子效果。
 
 ### Quantitative Comparison Metric
 
-The response includes a ``comparison`` object with three pairwise metrics:
+The response includes a ``comparison`` object with five pairwise metrics:
 
 | Pair | Metric | Typical value | Meaning |
 |---|---|---|---|
-| natural vs pop | `rms_delta_db` | 0.3–1.5 dB | Moderate energy difference |
-| natural vs pop | `waveform_correlation` | 0.85–0.97 | Similar shape, some differences |
-| pop vs robotic | `rms_delta_db` | 2–6 dB | Strong energy difference |
-| pop vs robotic | `waveform_correlation` | 0.40–0.75 | Significantly different shape |
-| natural vs robotic | `rms_delta_db` | 3–8 dB | Maximum difference |
-| natural vs robotic | `waveform_correlation` | 0.30–0.65 | Very different waveforms |
+| natural_pop vs modern_pop | `waveform_correlation` | 0.85–0.95 | Similar shape, moderate difference |
+| modern_pop vs emotional_rnb | `waveform_correlation` | 0.88–0.96 | Similar processing intensity |
+| emotional_rnb vs melodic_trap | `waveform_correlation` | 0.55–0.80 | Clearly different correction |
+| melodic_trap vs hyperpop | `waveform_correlation` | 0.40–0.70 | Very different character |
+| natural_pop vs hyperpop | `waveform_correlation` | 0.25–0.55 | Maximum difference |
 
 If ``waveform_correlation`` > 0.95 across all pairs, the vocal likely lacks
 clear pitch (spoken word, whispering) — try a **sung melody** for more
 meaningful results.
 
+## v3.4 A/B Listening Feedback Loop
+
+After running ``/quality-check`` to generate five preset versions, you can
+submit per-version listening labels to ``POST /quality-feedback``.  These
+records build a labelled dataset for future personalised Auto-Tune
+parameter recommendation.
+
+### How to Do an A/B Listening Test
+
+**Step 1 — start the backend** and open the frontend in a browser:
+
+```bash
+uvicorn backend.app:app --host 127.0.0.1 --port 8000
+# Open index.html in your browser
+```
+
+**Step 2 — upload a vocal file** (WAV/MP3/M4A, any key, < 25 MB).
+
+**Step 3 — click "A/B 听感测试"**.  The backend generates five WAV files
+(natural_pop / modern_pop / emotional_rnb / melodic_trap / hyperpop) and
+returns download URLs.  Each version appears with an inline audio player.
+
+**Step 4 — listen and label**:
+
+| Button | Label | Meaning |
+|---|---|---|
+| ★ 最好听 | `best` | This preset sounds the best for this vocal |
+| 自然 | `natural` | Sounds transparent, barely processed |
+| 不错 | `good` | Acceptable, useable |
+| 太假 | `too_fake` | Artificial / robotic character |
+| 太轻 | `too_light` | Correction not strong enough |
+| 太重 | `too_heavy` | Over-processed |
+| 刺耳 | `harsh` | Harsh high frequencies / distortion |
+
+You can label multiple presets.  Each click sends one record to the backend.
+
+**Step 5 — verify the feedback was recorded**:
+
+```bash
+type backend\feedback\autotune_listening.jsonl
+```
+
+Example record:
+
+```json
+{"vocal_id": "abc123", "preset_name": "modern_pop", "label": "best", "rating": 5, "timestamp_utc": "2026-05-30T..."}
+```
+
+### API: POST /quality-feedback
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `vocal_id` | string | yes | Vocal session ID from `/quality-check` response |
+| `preset_name` | string | yes | natural_pop / modern_pop / emotional_rnb / melodic_trap / hyperpop |
+| `rating` | int | no | 1–5, where 5 = best |
+| `label` | string | no | best / too_fake / too_light / too_heavy / harsh / natural / good |
+| `note` | string | no | Free-text comment |
+| `backing_style` | string | no | pop / trap / rnb / electronic / unknown |
+
+```bash
+curl -X POST http://127.0.0.1:8000/quality-feedback \
+  -H "Content-Type: application/json" \
+  -d '{"vocal_id":"abc123","preset_name":"modern_pop","label":"best","rating":5}'
+```
+
+### Future Use of Feedback Data
+
+The labelled records serve two purposes:
+
+1. **Personalised ranking** — given a vocal's audio quality + key/scale +
+   backing style, predict which preset the user is most likely to prefer.
+2. **Preset calibration** — if 80 % of users label ``hyperpop`` as
+   ``too_fake`` on natural vocals, we know the preset should be tuned down
+   for that vocal type.
+
 ### Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| All 3 sound identical | Vocal has no clear F0 (spoken, whisper) | Upload a melody with clear pitch |
-| robotic sounds too quiet | Tanh saturation + 80 Hz cut | Expected — check peak ratio in comparison |
-| natural sounds processed | Input already heavily Auto-Tuned | Use a raw/unprocessed vocal recording |
+| All 5 sound identical | Vocal has no clear F0 (spoken, whisper) | Upload a melody with clear pitch |
+| hyperpop sounds too quiet | Tanh saturation + 80 Hz cut | Expected — check peak ratio in comparison |
+| natural_pop sounds processed | Input already heavily Auto-Tuned | Use a raw/unprocessed vocal recording |
 | Server error 500 | ffmpeg not on PATH | `ffmpeg -version` → install if missing |
+| Feedback not saved | `feedback/` dir missing | Backend auto-creates on first write |
+| Frontend CORS error | Backend not on 127.0.0.1:8000 | Start uvicorn with `--host 127.0.0.1 --port 8000` |
