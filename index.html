@@ -1624,12 +1624,12 @@
         clickedBtn.classList.add('sent');
         clickedBtn.textContent = '✓ ' + clickedBtn.textContent.replace('✓ ', '');
 
-        // v3.6: update feedback log
+        // v3.6: update feedback log with count
         const logEntry = `${presetName} → ${label}`;
         qcFeedbackLogEntries.push(logEntry);
         const logEl = document.getElementById('qcFeedbackLogText');
         if (logEl) {
-          logEl.textContent = '已反馈: ' + qcFeedbackLogEntries.join(' | ');
+          logEl.textContent = `本次已记录反馈：${qcFeedbackLogEntries.length} 条 | ${qcFeedbackLogEntries.join(' · ')}`;
         }
 
         qcFeedbackResult.textContent = `已记录：${presetName} → ${label}`;

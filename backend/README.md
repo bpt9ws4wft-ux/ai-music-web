@@ -531,7 +531,7 @@ Future steps:
 
 ```
 backend/
-├── app.py              # FastAPI entry point (v3.1)
+├── app.py              # FastAPI entry point (v3.6)
 ├── requirements.txt    # Python dependencies
 ├── README.md           # This file
 ├── .gitignore
@@ -588,11 +588,11 @@ Each submission appends one line to `backend/feedback/feedback.jsonl`:
   strength recommendation (e.g., "given vocal quality X and beat style Y,
   predict whether the user will find the correction too light/just right/too heavy")
 
-## v3.1 Quality Check — 三版本 Auto-Tune 校准 (A/B Comparison)
+## Quality Check Endpoint (v3.6)
 
 The ``POST /quality-check`` endpoint processes the **same vocal** through
-**three deliberately extreme parameter sets** so you can verify that the
-pitch-correction engine genuinely produces audibly different results.
+**five mainstream preset profiles** (natural_pop / modern_pop / emotional_rnb /
+melodic_trap / hyperpop) so you can compare Auto-Tune styles side by side.
 
 ### Quick Start
 
