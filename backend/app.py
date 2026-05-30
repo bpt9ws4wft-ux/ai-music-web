@@ -641,6 +641,61 @@ _BACKING_STYLE_MAP = {
 }
 
 
+def _load_autotune_feedback_preferences() -> dict[str, dict]:
+    """Load accumulated v3.4 A/B listening feedback and compute per-preset scores.
+
+    Returns ``{preset_name: {score, count, best_count}}`` keyed by preset name.
+    Empty dict if no feedback file exists or it cannot be parsed.
+
+    Scoring rules:
+    - label=best  or  rating≥5  → +3
+    - label=good / natural  or  rating≥4  → +1
+    - label=too_fake / too_heavy / harsh → −2
+    - label=too_light → −1
+    """
+    if not QUALITY_FEEDBACK_PATH.exists():
+        return {}
+
+    scores: dict[str, dict] = {}
+    try:
+        with open(QUALITY_FEEDBACK_PATH, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                pname = rec.get("preset_name", "")
+                if not pname or pname not in MAINSTREAM_AUTOTUNE_PRESETS:
+                    continue
+
+                if pname not in scores:
+                    scores[pname] = {"score": 0, "count": 0, "best_count": 0}
+
+                label = rec.get("label", "")
+                rating = rec.get("rating") or 0
+
+                if label == "best" or (isinstance(rating, (int, float)) and rating >= 5):
+                    scores[pname]["score"] += 3
+                    scores[pname]["best_count"] += 1
+                elif label in ("good", "natural") or (isinstance(rating, (int, float)) and rating >= 4):
+                    scores[pname]["score"] += 1
+                elif label in ("too_fake", "too_heavy", "harsh"):
+                    scores[pname]["score"] -= 2
+                elif label == "too_light":
+                    scores[pname]["score"] -= 1
+
+                scores[pname]["count"] += 1
+    except Exception:
+        logging.exception("Failed to load feedback preferences")
+        return {}
+
+    return scores
+
+
 def _match_autotune_preset_auto(
     beat_style: str,
     scale: str,
@@ -649,7 +704,7 @@ def _match_autotune_preset_auto(
     beat_analysis: dict | None = None,
     backing: dict | None = None,
 ) -> dict:
-    """v3.2 auto-adaptation — vocal-quality + backing-style + scale driven.
+    """v3.5 auto-adaptation — vocal-quality + backing-style + scale + feedback driven.
 
     Decision hierarchy:
     1. Audio-quality emergency overrides (too_quiet / clipped_risk)
@@ -671,16 +726,19 @@ def _match_autotune_preset_auto(
         effective_hint = backing["rough_style_hint"]
 
     quality_reasons: list[str] = []
+    quality_override_active = False  # v3.5: guard — feedback never overrides safety
 
     # ---- Step 1: quality-first overrides -----------------------------------
     if too_quiet:
         name = "live_tracking"
         confidence = 35
         source_note = "人声过低（< −30 dBFS），自动选择现场录音预设避免伪影放大"
+        quality_override_active = True
     elif clipped_risk:
         name = "natural_pop"
         confidence = 45
         source_note = "爆音风险（峰值 > −0.3 dBFS），自动降低修正强度保护音质"
+        quality_override_active = True
     elif effective_hint == "trap":
         if scale == "minor":
             name = "melodic_trap"
@@ -739,7 +797,80 @@ def _match_autotune_preset_auto(
         confidence = 88
         source_note = f"极低偏好（{strength_preference}%）→ 现场录音预设"
 
+    # ---- v3.5: feedback-driven nudge (auto mode only) ------------------------
+    # Only applied when quality overrides are NOT active (too_quiet / clipped_risk
+    # already bail out to safe presets above).  Feedback can nudge within the same
+    # "intensity group" but never swaps natural → robotic or vice versa.
+    preferences = _load_autotune_feedback_preferences()
+    feedback_score = 0
+    feedback_adjustment = ""
+    personalization_source = "无历史反馈数据"
+    nudge_applied = False
+
+    if preferences and not quality_override_active:
+        # v3.5: feedback nudge only fires when audio quality is normal.
+        # too_quiet / clipped_risk already selected safe presets — do NOT override.
+        # Adjacent-intensity groups: presets that can be swapped based on feedback.
+        FEEDBACK_NUDGE_GROUPS = [
+            ["live_tracking", "natural_pop"],
+            ["natural_pop", "modern_pop", "emotional_rnb"],
+            ["modern_pop", "emotional_rnb", "melodic_trap"],
+            ["melodic_trap", "hyperpop"],
+        ]
+        current_group = None
+        for grp in FEEDBACK_NUDGE_GROUPS:
+            if name in grp:
+                current_group = grp
+                break
+
+        if current_group:
+            candidates = [
+                (n, preferences.get(n, {}).get("score", 0),
+                 preferences.get(n, {}).get("count", 0),
+                 preferences.get(n, {}).get("best_count", 0))
+                for n in current_group
+                if n in MAINSTREAM_AUTOTUNE_PRESETS
+            ]
+            candidates.sort(key=lambda x: x[1], reverse=True)
+
+            best_fb_name, best_fb_score, best_fb_count, _ = candidates[0]
+            current_fb = preferences.get(name, {})
+            current_score = current_fb.get("score", 0)
+            current_count = current_fb.get("count", 0)
+
+            # Nudge threshold: another preset in same group has ≥ 3 more points.
+            if best_fb_name != name and best_fb_score >= current_score + 3:
+                nudge_applied = True
+                old_label = MAINSTREAM_AUTOTUNE_PRESETS[name]["preset_label"]
+                new_label = MAINSTREAM_AUTOTUNE_PRESETS[best_fb_name]["preset_label"]
+                feedback_score = best_fb_score
+                feedback_adjustment = (
+                    f"反馈偏好：'{old_label}' → '{new_label}'"
+                    f"（历史评分 {current_score} → {best_fb_score}）"
+                )
+                personalization_source = (
+                    f"基于 {best_fb_count} 条历史反馈"
+                )
+                name = best_fb_name
+                confidence = min(100, confidence + 3)  # slight confidence boost
+                source_note += f"（反馈偏好已调整）"
+            else:
+                feedback_score = current_score
+                if current_count > 0:
+                    feedback_adjustment = (
+                        f"当前预设 '{MAINSTREAM_AUTOTUNE_PRESETS[name]['preset_label']}' "
+                        f"反馈评分 {current_score}，保持选择"
+                    )
+                    personalization_source = f"基于 {current_count} 条历史反馈"
+                else:
+                    personalization_source = "无针对此预设的历史反馈"
+
     preset = MAINSTREAM_AUTOTUNE_PRESETS[name].copy()
+    if nudge_applied:
+        preset["_feedback_nudge"] = True
+    preset["_feedback_score"] = feedback_score
+    preset["_feedback_adjustment"] = feedback_adjustment
+    preset["_personalization_source"] = personalization_source
 
     # ---- Step 2: audio-quality micro-tuning (applies unless overridden) ----
     if too_quiet:
@@ -884,6 +1015,11 @@ def _generate_autotune_profile(
     quality_reasons = preset.get("_quality_reasons", [])
     source_note = preset.get("_source_note", "")
     preset_source = preset["preset_source"]
+
+    # v3.5 feedback-aware fields
+    feedback_preference_score = preset.get("_feedback_score", 0)
+    feedback_adjustment = preset.get("_feedback_adjustment", "")
+    personalization_source = preset.get("_personalization_source", "无历史反馈数据")
 
     # ---- 2. legacy style_mode (for pitch-correction engine) ------------------
     style_mode = PRESET_TO_STYLE.get(preset_name, "natural")
@@ -1034,6 +1170,9 @@ def _generate_autotune_profile(
         "style_mode": style_mode,
         "style_mode_label": style_labels[style_mode],
         "vocal_quality": vocal_quality,
+        "feedback_preference_score": feedback_preference_score,
+        "feedback_adjustment": feedback_adjustment,
+        "personalization_source": personalization_source,
         "backing_match": backing_match,
         "adaptation_reason": adaptation_reason,
         "reason": "；".join(reasons),

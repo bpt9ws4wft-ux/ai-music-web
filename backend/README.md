@@ -773,14 +773,82 @@ curl -X POST http://127.0.0.1:8000/quality-feedback \
   -d '{"vocal_id":"abc123","preset_name":"modern_pop","label":"best","rating":5}'
 ```
 
+## v3.5 Feedback-aware Auto-Tune Recommendation
+
+In **auto mode** (`autotune_mode=auto`), the system reads past A/B listening
+feedback from ``backend/feedback/autotune_listening.jsonl`` and uses it to
+nudge the preset selection toward what the user has historically preferred.
+
+### How Feedback Affects Recommendations
+
+1. **Scoring**: each feedback record contributes a per-preset score:
+   - `best` or rating≥5 → +3
+   - `good` / `natural` or rating≥4 → +1
+   - `too_fake` / `too_heavy` / `harsh` → −2
+   - `too_light` → −1
+
+2. **Nudge rule**: after the normal auto-adaptation logic selects a preset,
+   the system checks whether another preset in the same "intensity group"
+   has a feedback score at least **3 points higher**.  If so, it nudges the
+   selection toward the higher-scored preset.
+
+3. **Intensity groups** (safe swapping boundaries):
+
+   | Group | Presets |
+   |---|---|
+   | Conservative | `live_tracking`, `natural_pop` |
+   | Balanced | `natural_pop`, `modern_pop`, `emotional_rnb` |
+   | Aggressive | `modern_pop`, `emotional_rnb`, `melodic_trap` |
+   | Extreme | `melodic_trap`, `hyperpop` |
+
+   Feedback can only nudge within a group — e.g., `modern_pop` ↔ `emotional_rnb`
+   but never `natural_pop` → `hyperpop`.
+
+4. **Quality protections always take priority**: `too_quiet` → `live_tracking`
+   and `clipped_risk` → `natural_pop` are never overridden by feedback.
+
+5. **When there is no feedback file**, behavior is identical to v3.4 — no
+   nudge is applied.
+
+### What You See in the Response
+
+The `X-Autotune-Profile` header includes three new fields:
+
+| Field | Example | Meaning |
+|---|---|---|
+| `feedback_preference_score` | `5` | Cumulative score for the selected preset (or 0) |
+| `feedback_adjustment` | `反馈偏好：'现代流行' → '情绪 R&B'（历史评分 0 → 5）` | What the nudge did (or "保持选择") |
+| `personalization_source` | `基于 3 条历史反馈` | Data source note (or "无历史反馈数据") |
+
+### Verification
+
+```bash
+# 1. Submit several A/B feedback records favoring emotional_rnb
+curl -X POST http://127.0.0.1:8000/quality-feedback \
+  -H "Content-Type: application/json" \
+  -d '{"vocal_id":"test","preset_name":"emotional_rnb","label":"best","rating":5}'
+# (repeat 3-4 times)
+
+# 2. Run process-vocal in auto mode with a pop backing
+curl -v -X POST http://127.0.0.1:8000/process-vocal \
+  -F "file=@your-vocal.wav" \
+  -F "autotune_mode=auto" \
+  -F "backing_style=pop" \
+  -o /dev/null 2>&1 | grep -i "feedback"
+
+# 3. Check the X-Autotune-Profile for feedback_preference_score and feedback_adjustment
+```
+
 ### Future Use of Feedback Data
 
-The labelled records serve two purposes:
+The labelled records serve three purposes:
 
-1. **Personalised ranking** — given a vocal's audio quality + key/scale +
+1. **Real-time nudge (v3.5)** — already implemented: nudges auto-mode preset
+   selection toward historically preferred presets within the same intensity group.
+2. **Personalised ranking (future)** — given a vocal's audio quality + key/scale +
    backing style, predict which preset the user is most likely to prefer.
-2. **Preset calibration** — if 80 % of users label ``hyperpop`` as
-   ``too_fake`` on natural vocals, we know the preset should be tuned down
+3. **Preset calibration (future)** — if 80 % of users label ``hyperpop`` as
+   ``too_fake`` on natural vocals, the preset parameters should be tuned down
    for that vocal type.
 
 ### Troubleshooting

@@ -502,6 +502,12 @@
                 <small style="color:var(--accent-2); display:block; font-size:11px; margin-bottom:4px;">伴奏匹配度</small>
                 <div id="profileBackingMatch" style="font-size:13px; font-weight:700; color:var(--text);">--</div>
               </div>
+              <div id="profilePersonalizationSection" style="display:none; margin-top:8px; padding:8px 10px; border-radius:8px; background:rgba(245,158,11,0.06); border:1px solid rgba(245,158,11,0.12);">
+                <small style="color:var(--warning); display:block; font-size:11px; margin-bottom:4px;">个性化偏好 (v3.5)</small>
+                <div id="profilePersonalization" style="font-size:12px; color:var(--text); margin-bottom:2px;">--</div>
+                <div id="profileFeedbackScore" style="font-size:11px; color:var(--muted); margin-bottom:2px;">--</div>
+                <div id="profileFeedbackAdjustment" style="font-size:11px; color:var(--text);">--</div>
+              </div>
               <div id="profileBackingDetails" style="display:none; margin-top:8px; padding:8px 10px; border-radius:8px; background:rgba(34,211,238,0.05); border:1px solid rgba(34,211,238,0.10);">
                 <small style="color:var(--accent-2); display:block; font-size:11px; margin-bottom:6px;">伴奏特征（v3.0 文件分析）</small>
                 <div style="display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:6px;">
@@ -1007,6 +1013,9 @@
     const profileProcessingSummary = document.getElementById('profileProcessingSummary');
     const profileAdaptationSummary = document.getElementById('profileAdaptationSummary');
     const profileBackingMatch = document.getElementById('profileBackingMatch');
+    const profileFeedbackScore = document.getElementById('profileFeedbackScore');
+    const profileFeedbackAdjustment = document.getElementById('profileFeedbackAdjustment');
+    const profilePersonalization = document.getElementById('profilePersonalization');
     const profileBackingDetails = document.getElementById('profileBackingDetails');
     const backingDetailStyleHint = document.getElementById('backingDetailStyleHint');
     const backingDetailEnergy = document.getElementById('backingDetailEnergy');
@@ -1275,6 +1284,19 @@
       const backingMatchEl = document.getElementById('profileBackingMatch');
       if (backingMatchEl) {
         backingMatchEl.textContent = profile.backing_match || '--';
+      }
+      // v3.5: personalization info
+      const persSection = document.getElementById('profilePersonalizationSection');
+      const src = profile.personalization_source || '';
+      const score = profile.feedback_preference_score;
+      const adj = profile.feedback_adjustment || '';
+      if (src && src !== '无历史反馈数据') {
+        if (persSection) persSection.style.display = 'block';
+        profilePersonalization.textContent = src;
+        profileFeedbackScore.textContent = score != null ? `偏好分数: ${score > 0 ? '+' : ''}${score}` : '--';
+        profileFeedbackAdjustment.textContent = adj || '--';
+      } else {
+        if (persSection) persSection.style.display = 'none';
       }
       // Backing details (v2.8 form-field path + v3.0 file-analysis path)
       const inputs = profile.adaptation_inputs;
