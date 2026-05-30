@@ -612,9 +612,13 @@ type qc_report.json
 
 ### Download Each Version
 
-The JSON response contains ``versions.natural_pop.download_url``,
-``versions.modern_pop.download_url``, ``versions.emotional_rnb.download_url``,
-``versions.melodic_trap.download_url``, and ``versions.hyperpop.download_url``.
+The JSON response contains:
+- ``source_download_url`` — the unprocessed original vocal for reference
+- ``recommended_preset`` — which preset auto mode would select (v3.6)
+- ``versions.natural_pop.download_url``, ``versions.modern_pop.download_url``,
+  ``versions.emotional_rnb.download_url``, ``versions.melodic_trap.download_url``,
+  and ``versions.hyperpop.download_url``
+
 Use them to fetch each processed WAV:
 
 ```bash
@@ -708,16 +712,26 @@ If ``waveform_correlation`` > 0.95 across all pairs, the vocal likely lacks
 clear pitch (spoken word, whispering) — try a **sung melody** for more
 meaningful results.
 
-## v3.4 A/B Listening Feedback Loop
+## v3.6 Auto-Tune Listening Workbench
 
-After running ``/quality-check`` to generate five preset versions, you can
-submit per-version listening labels to ``POST /quality-feedback``.  These
-records build a labelled dataset for future personalised Auto-Tune
-parameter recommendation.
+The frontend A/B testing area has been upgraded into a full listening
+workbench for efficient preset comparison.
 
-### How to Do an A/B Listening Test
+### Workbench Features
 
-**Step 1 — start the backend** and open the frontend in a browser:
+| Feature | Description |
+|---|---|
+| **Original vocal player** | The unprocessed source WAV at the top — always available as reference |
+| **5 version players** | One inline `<audio>` per preset with per-version parameter display |
+| **"Current Recommendation" badge** | Highlights which preset auto mode would pick for this vocal |
+| **10-second preview toggle** | Limits all players to the first 10 seconds — fast A/B cycling |
+| **Auto-pause** | Playing one audio automatically pauses all others — no overlapping sound |
+| **Feedback log** | Live-updating text showing which presets you've labelled and how |
+| **Parameter display** | Each version shows retune_ms, correction%, humanize, formant, vibrato |
+
+### How to Use the Workbench
+
+**Step 1 — start the backend** and open the frontend:
 
 ```bash
 uvicorn backend.app:app --host 127.0.0.1 --port 8000
@@ -726,11 +740,23 @@ uvicorn backend.app:app --host 127.0.0.1 --port 8000
 
 **Step 2 — upload a vocal file** (WAV/MP3/M4A, any key, < 25 MB).
 
-**Step 3 — click "A/B 听感测试"**.  The backend generates five WAV files
-(natural_pop / modern_pop / emotional_rnb / melodic_trap / hyperpop) and
-returns download URLs.  Each version appears with an inline audio player.
+**Step 3 — click "A/B 听感测试"**.  The backend generates five versions and
+returns them with a source audio URL and a `recommended_preset` field.
 
-**Step 4 — listen and label**:
+**Step 4 — use the workbench controls**:
+- Play the original, then each version.  Only one plays at a time.
+- Enable "前10秒预览" for rapid cycling between presets.
+- The preset with the "当前推荐" badge is what auto mode would select.
+- Click feedback buttons to label each version.
+- The feedback log at the top tracks what you've labelled.
+
+### How to Do an A/B Listening Test (API-only)
+
+After running ``/quality-check``, submit per-version listening labels
+to ``POST /quality-feedback``.  These records build a labelled dataset
+for future personalised Auto-Tune parameter recommendation.
+
+**Step 5 — listen and label**:
 
 | Button | Label | Meaning |
 |---|---|---|

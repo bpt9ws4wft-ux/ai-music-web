@@ -2224,6 +2224,8 @@ async def quality_check(
     file: UploadFile = File(...),
     key: str = Form("C"),
     scale: str = Form("major"),
+    beat_style: str = Form(""),
+    backing_style: str = Form(""),
 ):
     """Generate five mainstream Auto-Tune versions of the same vocal for A/B comparison.
 
@@ -2386,13 +2388,35 @@ async def quality_check(
         logging.exception("Quantitative comparison failed — continuing without")
         comparison = {"error": "Could not compute quantitative differences"}
 
+    # --- 4b. Simulate auto-mode recommendation (v3.6) --------------------------
+    recommended_preset: str | None = None
+    try:
+        sim_backing: dict | None = None
+        if backing_style.strip():
+            sim_backing = {"style": backing_style.strip()}
+        auto_match = _match_autotune_preset_auto(
+            beat_style=beat_style.strip() or "流行节奏",
+            scale=scale,
+            analysis=analysis,
+            strength_preference=50,
+            backing=sim_backing,
+        )
+        recommended_preset = auto_match.get("preset_name")
+    except Exception:
+        logging.exception("Auto-mode simulation failed — no recommendation")
+
     # --- 5. Build response --------------------------------------------------
+    # Source WAV is already saved as qc_source_{vocal_id}.wav
+    source_url = f"/download/{wav_name}"
+
     return {
         "vocal_id": vocal_id,
         "source_filename": file.filename,
+        "source_download_url": source_url,
         "key": key,
         "scale": scale,
         "scale_label": "小调" if scale == "minor" else "大调",
+        "recommended_preset": recommended_preset,
         "source_analysis": {
             "duration_seconds": analysis["duration_seconds"],
             "peak_dbfs": analysis["peak_dbfs"],
@@ -2401,14 +2425,14 @@ async def quality_check(
         "versions": results,
         "comparison": comparison,
         "how_to_test": (
-            "1. Download each file:  curl -O http://127.0.0.1:8000/download/qc_natural_pop_{id}.wav  "
-            "(repeat for modern_pop, emotional_rnb, melodic_trap, hyperpop).  "
-            "2. natural_pop — 几乎听不出修音。  "
-            "3. modern_pop — 稳定明亮的主流流行修音。  "
-            "4. emotional_rnb — 保留转音和颤音。  "
-            "5. melodic_trap — 快速音高锁定，明显的修音感。  "
-            "6. hyperpop — 强电子音色，创意效果。  "
-            "7. If natural_pop ≈ hyperpop, the vocal may lack clear pitch (try a sung melody)."
+            "1. Listen to the source, then each version.  "
+            "2. The 'recommended_preset' is what auto mode would pick.  "
+            "3. Use the '10s preview' toggle for quick A/B.  "
+            "4. natural_pop — 几乎听不出修音。  "
+            "5. modern_pop — 稳定明亮的主流流行修音。  "
+            "6. emotional_rnb — 保留转音和颤音。  "
+            "7. melodic_trap — 快速音高锁定，明显的修音感。  "
+            "8. hyperpop — 强电子音色，创意效果。"
         ).format(id=vocal_id),
     }
 

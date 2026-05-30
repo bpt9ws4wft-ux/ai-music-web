@@ -1433,6 +1433,10 @@
       formData.append('file', selectedUploadFile);
       formData.append('key', keySelect.value);
       formData.append('scale', modeSelect.value);
+      formData.append('beat_style', selectedBeat);
+      if (currentBackingAnalysis && currentBackingAnalysis.suggested_style) {
+        formData.append('backing_style', currentBackingAnalysis.suggested_style);
+      }
 
       try {
         const response = await fetch('http://127.0.0.1:8000/quality-check', {
@@ -1461,20 +1465,58 @@
       }
     }
 
+    // v3.6: feedback history accumulator
+    let qcFeedbackLogEntries = [];
+
     function displayQCResults(report) {
       currentQCVocalId = report.vocal_id;
       qcVersionList.innerHTML = '';
       qualityCheckSection.style.display = 'block';
       qcFeedbackResult.style.display = 'none';
+      qcFeedbackLogEntries = [];
 
+      const recPreset = report.recommended_preset;
+
+      // ── Source player ───────────────────────────────────────────────────
+      const sourceDiv = document.createElement('div');
+      sourceDiv.style.cssText = 'margin-bottom:10px; padding:8px; border-radius:8px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06);';
+      sourceDiv.innerHTML = `
+        <strong style="font-size:13px;">原声</strong>
+        <span style="font-size:11px; color:var(--muted); margin-left:6px;">${report.source_analysis.duration_seconds}s</span>
+        <audio class="qc-audio" controls preload="metadata" src="http://127.0.0.1:8000${report.source_download_url}" style="width:100%; height:30px; margin-top:4px;"></audio>
+      `;
+      qcVersionList.appendChild(sourceDiv);
+
+      // ── Controls row ─────────────────────────────────────────────────────
+      const ctrlDiv = document.createElement('div');
+      ctrlDiv.style.cssText = 'display:flex; gap:10px; align-items:center; margin-bottom:10px; flex-wrap:wrap;';
+      ctrlDiv.innerHTML = `
+        <label style="font-size:12px; color:var(--muted); display:flex; align-items:center; gap:4px; cursor:pointer;">
+          <input type="checkbox" id="qcTenSecToggle" style="accent-color:var(--accent-2);"> 前10秒预览
+        </label>
+        <span style="font-size:11px; color:var(--muted);" id="qcFeedbackLogText">未记录反馈</span>
+      `;
+      qcVersionList.appendChild(ctrlDiv);
+
+      // v3.6: 10-second preview toggle
+      document.getElementById('qcTenSecToggle').addEventListener('change', (e) => {
+        const limit = e.target.checked;
+        document.querySelectorAll('.qc-audio').forEach(a => {
+          a.currentTime = 0;
+          if (limit) {
+            a.dataset.tenSec = '1';
+          } else {
+            delete a.dataset.tenSec;
+          }
+        });
+      });
+
+      // ── Per-version entries ──────────────────────────────────────────────
       const presetLabels = {
-        natural_pop: '自然流行',
-        modern_pop: '现代流行',
-        emotional_rnb: '情绪 R&B',
-        melodic_trap: '旋律 Trap',
+        natural_pop: '自然流行', modern_pop: '现代流行',
+        emotional_rnb: '情绪 R&B', melodic_trap: '旋律 Trap',
         hyperpop: 'Hyperpop 创意',
       };
-
       const presetOrder = ['natural_pop', 'modern_pop', 'emotional_rnb', 'melodic_trap', 'hyperpop'];
 
       for (const pname of presetOrder) {
@@ -1484,15 +1526,30 @@
         const entry = document.createElement('div');
         entry.className = 'qc-version-entry';
 
-        const retuneMs = ver.profile.retune_ms_equivalent != null ? `~${ver.profile.retune_ms_equivalent}ms` : '';
-        const corrPct = ver.profile.correction_amount != null ? `${ver.profile.correction_amount}%` : '';
+        const rms = ver.profile.retune_ms_equivalent != null ? `~${ver.profile.retune_ms_equivalent}ms` : '--';
+        const corr = ver.profile.correction_amount != null ? `${ver.profile.correction_amount}%` : '--';
+        const hum = ver.profile.humanize != null ? ver.profile.humanize : '--';
+        const fm = ver.profile.formant_preserve != null ? ver.profile.formant_preserve : '--';
+        const vib = ver.profile.vibrato_preserve != null ? ver.profile.vibrato_preserve : '--';
+        const isRec = recPreset === pname;
+        const recBadge = isRec
+          ? '<span style="font-size:10px; padding:2px 8px; border-radius:999px; background:rgba(34,211,238,0.18); color:var(--accent-2); font-weight:700; margin-left:6px;">当前推荐</span>'
+          : '';
 
         entry.innerHTML = `
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-            <strong style="font-size:13px;">${pname} — ${presetLabels[pname] || ver.preset_label}</strong>
-            <span style="font-size:11px; color:var(--muted);">retune ${retuneMs} · corr ${corrPct}</span>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+            <div>
+              <strong style="font-size:13px;">${pname} — ${presetLabels[pname] || ver.preset_label}</strong>${recBadge}
+            </div>
+            <span style="font-size:11px; color:var(--muted);">retune ${rms}</span>
           </div>
-          <audio controls preload="metadata" src="http://127.0.0.1:8000${ver.download_url}" style="width:100%; height:30px; margin-bottom:6px;"></audio>
+          <div style="display:flex; gap:6px; margin-bottom:6px; font-size:10px; color:var(--muted); flex-wrap:wrap;">
+            <span>corr ${corr}</span><span>·</span>
+            <span>hum ${hum}</span><span>·</span>
+            <span>fmt ${fm}</span><span>·</span>
+            <span>vib ${vib}</span>
+          </div>
+          <audio class="qc-audio" controls preload="metadata" src="http://127.0.0.1:8000${ver.download_url}" style="width:100%; height:30px; margin-bottom:6px;"></audio>
           <div class="qc-fb-buttons" style="display:flex; gap:4px; flex-wrap:wrap;" data-preset="${pname}">
             <button class="qc-fb-btn" data-label="best" data-rating="5">★ 最好听</button>
             <button class="qc-fb-btn" data-label="natural">自然</button>
@@ -1504,7 +1561,6 @@
           </div>
         `;
 
-        // Attach feedback click handlers
         entry.querySelectorAll('.qc-fb-btn').forEach(btn => {
           btn.addEventListener('click', () => {
             const preset = btn.parentElement.dataset.preset;
@@ -1516,7 +1572,27 @@
 
         qcVersionList.appendChild(entry);
       }
+
+      // v3.6: auto-pause interceptor — pause all other audio when one plays
+      qcVersionList.querySelectorAll('.qc-audio').forEach(a => {
+        a.addEventListener('play', () => {
+          qcVersionList.querySelectorAll('.qc-audio').forEach(other => {
+            if (other !== a && !other.paused) {
+              other.pause();
+            }
+          });
+        });
+      });
     }
+
+    // v3.6: 10-second limit enforcement on timeupdate
+    document.addEventListener('timeupdate', (e) => {
+      const a = e.target;
+      if (a && a.dataset && a.dataset.tenSec === '1' && a.currentTime > 10) {
+        a.pause();
+        a.currentTime = 0;
+      }
+    }, true);
 
     async function sendQCFeedback(presetName, label, rating, clickedBtn) {
       if (!currentQCVocalId) return;
@@ -1547,6 +1623,14 @@
         // Mark clicked button as sent
         clickedBtn.classList.add('sent');
         clickedBtn.textContent = '✓ ' + clickedBtn.textContent.replace('✓ ', '');
+
+        // v3.6: update feedback log
+        const logEntry = `${presetName} → ${label}`;
+        qcFeedbackLogEntries.push(logEntry);
+        const logEl = document.getElementById('qcFeedbackLogText');
+        if (logEl) {
+          logEl.textContent = '已反馈: ' + qcFeedbackLogEntries.join(' | ');
+        }
 
         qcFeedbackResult.textContent = `已记录：${presetName} → ${label}`;
         qcFeedbackResult.style.display = 'block';
