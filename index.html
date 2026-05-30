@@ -1298,6 +1298,20 @@
       } else {
         if (persSection) persSection.style.display = 'none';
       }
+      // v3.8: feedback parameter tuning display
+      const fbTuning = profile.feedback_parameter_adjustment;
+      if (fbTuning && fbTuning.applied) {
+        const b = fbTuning.before_params || {};
+        const a = fbTuning.after_params || {};
+        profileFeedbackAdjustment.textContent =
+          (profileFeedbackAdjustment.textContent !== '--' ? profileFeedbackAdjustment.textContent + ' | ' : '') +
+          `参数微调: corr ${b.correction_amount}→${a.correction_amount}% ` +
+          `retune ${b.retune_ms_equivalent}→${a.retune_ms_equivalent}ms ` +
+          `hum ${b.humanize}→${a.humanize}`;
+        if (fbTuning.personalization_reason && fbTuning.personalization_reason !== '无参数微调') {
+          profileFeedbackAdjustment.textContent += ' | ' + fbTuning.personalization_reason;
+        }
+      }
       // Backing details (v2.8 form-field path + v3.0 file-analysis path)
       const inputs = profile.adaptation_inputs;
       const bk = inputs && inputs.backing;
