@@ -814,6 +814,47 @@ curl -v -X POST http://127.0.0.1:8000/process-vocal \
   -F "backing_style=trap" -o /dev/null 2>&1 | Select-String "correction|personalization"
 ```
 
+## v4.3 Parameter Curve Continuity Optimization
+
+Applied 9 targeted parameter adjustments to improve the preset library's
+coverage density and smoothness, independent of feedback data.
+
+### Before vs After
+
+| Preset | Parameter | Before | After | Reason |
+|---|---|---|---|---|
+| `live_tracking` | correction_amount | 18% | **15%** | 拉开与 natural_pop 距离 |
+| `modern_pop` | humanize | 55 | **62** | 55 太接近 melodic_trap(38)；62 更接近 natural_pop(92) 的自然过渡 |
+| `emotional_rnb` | correction_amount | 42% | **48%** | 42% 太接近 natural_pop(28%)；48% 更好填补轻修音区 |
+| `melodic_trap` | correction_amount | 78% | **72%** | 为 trap_polished 腾出区分空间 |
+| `melodic_trap` | humanize | 30 | **38** | 30 太接近 hyperpop(2)；38 减少 too_fake 风险 |
+| `melodic_trap` | vibrato_preserve | 35 | **42** | 保留更多自然人声细节 |
+| `trap_polished` | correction_amount | 88% | **82%** | 88% 离 hyperpop(98%) 太近；82% 更好定位 "精修" 区间 |
+| `trap_polished` | humanize | 22 | **30** | 22 太低，处于机械感区间 |
+| `trap_polished` | retune_ms / retune_speed | 5ms / 86 | **8ms / 78** | 5ms 太快，与 hyperpop(0ms) 区分度不够 |
+
+### Updated correction curve
+
+```
+live_tracking   █░░░░░░░░░ 15%
+natural_pop     ███░░░░░░░ 28%
+emotional_rnb   █████░░░░░ 48%  ← 调后
+modern_pop      ██████░░░░ 60%
+melodic_trap    ███████░░░ 72%  ← 调后
+trap_polished   ████████░░ 82%  ← 调后
+hyperpop        ██████████ 98%
+```
+
+Gaps: 13, 20, 12, 12, 10, 16 — 最大间隙 20 在 natural_pop↔emotional_rnb 之间
+（有意保留，两者服务不同曲风：pop vs R&B）。
+
+### Note
+
+These adjustments are based on parameter curve analysis, not user feedback
+(no `autotune_listening.jsonl` data exists yet).  Once A/B listening feedback
+accumulates, the feedback-driven tuning rules (v3.8) and gap detection (v3.7)
+will further refine parameters automatically.
+
 ## v4.2 Agent Inbox for Auto-Tune Feedback
 
 Every time a user submits A/B listening feedback via ``POST /quality-feedback``,

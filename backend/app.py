@@ -358,7 +358,7 @@ MAINSTREAM_AUTOTUNE_PRESETS = {
         "retune_speed": 58,
         "retune_ms_equivalent": 26,
         "correction_amount": 60,
-        "humanize": 55,
+        "humanize": 62,
         "flex_tune_like": "Flex Tune ~35 % — balanced correction with natural decay",
         "formant_preserve": 70,
         "vibrato_preserve": 62,
@@ -373,11 +373,11 @@ MAINSTREAM_AUTOTUNE_PRESETS = {
         "preset_label": "旋律 Trap",
         "retune_speed": 78,
         "retune_ms_equivalent": 8,
-        "correction_amount": 78,
-        "humanize": 30,
-        "flex_tune_like": "Flex Tune ~15 % — fast snap, tight pitch lock",
+        "correction_amount": 72,
+        "humanize": 38,
+        "flex_tune_like": "Flex Tune ~18 % — fast snap, tight pitch lock",
         "formant_preserve": 48,
-        "vibrato_preserve": 35,
+        "vibrato_preserve": 42,
         "pitch_tracking": "fast",
         "best_for": "旋律说唱、Trap、Drill、Hip-Hop",
         "risk": "中 — 快速修正 + 80Hz 低切可能让低频区人声变薄；确保输入人声本身音高稳定",
@@ -387,11 +387,11 @@ MAINSTREAM_AUTOTUNE_PRESETS = {
     "trap_polished": {
         "preset_name": "trap_polished",
         "preset_label": "精修 Trap",
-        "retune_speed": 86,
-        "retune_ms_equivalent": 5,
-        "correction_amount": 88,
-        "humanize": 22,
-        "flex_tune_like": "Flex Tune ~10 % — fast snap with smoother decay than hyperpop",
+        "retune_speed": 78,
+        "retune_ms_equivalent": 8,
+        "correction_amount": 82,
+        "humanize": 30,
+        "flex_tune_like": "Flex Tune ~12 % — fast snap with smoother decay than hyperpop",
         "formant_preserve": 40,
         "vibrato_preserve": 23,
         "pitch_tracking": "fast",
@@ -421,7 +421,7 @@ MAINSTREAM_AUTOTUNE_PRESETS = {
         "preset_label": "情绪 R&B",
         "retune_speed": 36,
         "retune_ms_equivalent": 58,
-        "correction_amount": 42,
+        "correction_amount": 48,
         "humanize": 84,
         "flex_tune_like": "Flex Tune ~65 % — gentle, preserves runs and melisma",
         "formant_preserve": 84,
@@ -437,7 +437,7 @@ MAINSTREAM_AUTOTUNE_PRESETS = {
         "preset_label": "现场录音",
         "retune_speed": 14,
         "retune_ms_equivalent": 130,
-        "correction_amount": 18,
+        "correction_amount": 15,
         "humanize": 98,
         "flex_tune_like": "Flex Tune ~90 % — barely-there correction, zero artifacts",
         "formant_preserve": 96,
@@ -720,6 +720,112 @@ def _load_autotune_feedback_preferences() -> dict[str, dict]:
     return scores
 
 
+# ── v4.5 ML preference model integration ────────────────────────────────────
+
+_ML_MODEL_PATH = BASE_DIR / "ml" / "models" / "autotune_preference_model.json"
+
+
+def _load_ml_preference_model() -> dict | None:
+    """Load the v4.4 statistical preference model from disk.
+
+    Returns the full model dict, or ``None`` if the file does not exist,
+    is malformed, or represents an empty model (0 training samples).
+    """
+    if not _ML_MODEL_PATH.exists():
+        return None
+    try:
+        model = json.loads(_ML_MODEL_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        logging.warning("ML preference model could not be parsed — skipping")
+        return None
+    if model.get("training_sample_count", 0) == 0:
+        return None
+    return model
+
+
+def _apply_ml_preference_nudge(
+    current_name: str,
+    model: dict,
+    allowed_group: list[str],
+) -> dict:
+    """Determine whether an ML-driven preset switch is safe and warranted.
+
+    Returns a dict with keys ``adjusted`` (bool), ``new_name`` (str),
+    ``reason`` (str), and ``confidence`` (float).  The caller is responsible
+    for applying the switch (or not) based on the returned dict.
+
+    Safety rules (never violated):
+    1. Only presets in *allowed_group* are considered.
+    2. A target preset must have ``sample_count ≥ 3`` to be eligible.
+    3. A switch requires ``target.avg_score ≥ current.avg_score + 2``.
+    4. A switch can also trigger if ``current.negative_rate ≥ 0.6`` and
+       a target with ``positive_rate ≥ 0.6`` exists in the group.
+    5. If no eligible target exists, the current preset is kept.
+    """
+    scores = model.get("preset_scores", {})
+    current = scores.get(current_name, {})
+    current_avg = current.get("avg_score", 0)
+    current_neg = current.get("negative_rate", 0)
+    current_n = current.get("sample_count", 0)
+
+    best_target: str | None = None
+    best_score: float = -999
+    best_reason: str = ""
+
+    for pname in allowed_group:
+        if pname == current_name:
+            continue
+        ps = scores.get(pname, {})
+        n = ps.get("sample_count", 0)
+        if n < 3:
+            continue  # not enough data to trust
+        avg = ps.get("avg_score", 0)
+        pos_rate = ps.get("positive_rate", 0)
+
+        # Rule A: significant score advantage
+        if avg >= current_avg + 2:
+            if avg > best_score:
+                best_score = avg
+                best_target = pname
+                best_reason = (
+                    f"ML 偏好切换：'{MAINSTREAM_AUTOTUNE_PRESETS[current_name]['preset_label']}' "
+                    f"→ '{MAINSTREAM_AUTOTUNE_PRESETS[pname]['preset_label']}' "
+                    f"(avg_score {current_avg} → {avg}, n={n})"
+                )
+
+        # Rule B: current is heavily disliked, target is well-liked
+        if best_target is None and current_neg >= 0.6 and pos_rate >= 0.6:
+            if avg > best_score:
+                best_score = avg
+                best_target = pname
+                best_reason = (
+                    f"ML 负反馈切换：'{MAINSTREAM_AUTOTUNE_PRESETS[current_name]['preset_label']}' "
+                    f"negative_rate={current_neg} → "
+                    f"'{MAINSTREAM_AUTOTUNE_PRESETS[pname]['preset_label']}' "
+                    f"positive_rate={pos_rate}, n={n}"
+                )
+
+    if best_target is not None:
+        return {
+            "adjusted": True,
+            "new_name": best_target,
+            "reason": best_reason,
+            "confidence": model.get("confidence", 0),
+        }
+
+    # No switch — explain why
+    if current_n < 3:
+        reason = f"ML 模型样本不足（当前 preset 仅 {current_n} 条），仅记录，不强制调整"
+    else:
+        reason = f"ML 检查通过：当前 preset 评分 {current_avg}，同组无可替换方案"
+    return {
+        "adjusted": False,
+        "new_name": current_name,
+        "reason": reason,
+        "confidence": model.get("confidence", 0),
+    }
+
+
 def _match_autotune_preset_auto(
     beat_style: str,
     scale: str,
@@ -826,6 +932,8 @@ def _match_autotune_preset_auto(
     # already bail out to safe presets above).  Feedback can nudge within the same
     # "intensity group" but never swaps natural → robotic or vice versa.
     preferences = _load_autotune_feedback_preferences()
+    rule_candidate = name  # v4.7: capture before any nudges
+
     feedback_score = 0
     feedback_adjustment = ""
     personalization_source = "无历史反馈数据"
@@ -913,7 +1021,40 @@ def _match_autotune_preset_auto(
             confidence = min(100, confidence + 5)
             source_note += "（反馈缺口已填补 → trap_polished）"
 
+    # ---- v4.5: ML preference model nudge -----------------------------------
+    ml_model = None
+    ml_adjustment_applied = False
+    ml_adjustment_reason = ""
+    ml_candidate_before = name
+    ml_candidate_after = name
+    ml_model_available = False
+    ml_confidence = 0.0
+    ml_training_sample_count = 0
+
+    if not quality_override_active:
+        ml_model = _load_ml_preference_model()
+        if ml_model is not None:
+            ml_model_available = True
+            ml_confidence = ml_model.get("confidence", 0)
+            ml_training_sample_count = ml_model.get("training_sample_count", 0)
+
+            # Determine the allowed intensity group for the current preset.
+            for grp in FEEDBACK_NUDGE_GROUPS:
+                if name in grp:
+                    ml_result = _apply_ml_preference_nudge(name, ml_model, grp)
+                    if ml_result["adjusted"]:
+                        ml_adjustment_applied = True
+                        ml_adjustment_reason = ml_result["reason"]
+                        name = ml_result["new_name"]
+                        ml_candidate_after = name
+                        confidence = min(100, confidence + 3)
+                        source_note += f"（ML 偏好已调整 → {MAINSTREAM_AUTOTUNE_PRESETS[name]['preset_label']}）"
+                    else:
+                        ml_adjustment_reason = ml_result["reason"]
+                    break
+
     preset = MAINSTREAM_AUTOTUNE_PRESETS[name].copy()
+    preset["_rule_candidate"] = rule_candidate  # v4.7
     if nudge_applied:
         preset["_feedback_nudge"] = True
     if gap_detected:
@@ -921,6 +1062,14 @@ def _match_autotune_preset_auto(
     preset["_feedback_score"] = feedback_score
     preset["_feedback_adjustment"] = feedback_adjustment
     preset["_personalization_source"] = personalization_source
+    # v4.5 ML fields
+    preset["_ml_model_available"] = ml_model_available
+    preset["_ml_adjustment_applied"] = ml_adjustment_applied
+    preset["_ml_adjustment_reason"] = ml_adjustment_reason
+    preset["_ml_candidate_before"] = ml_candidate_before
+    preset["_ml_candidate_after"] = ml_candidate_after
+    preset["_ml_confidence"] = ml_confidence
+    preset["_ml_training_sample_count"] = ml_training_sample_count
 
     # ---- Step 2: audio-quality micro-tuning (applies unless overridden) ----
     if too_quiet:
@@ -1159,6 +1308,15 @@ def _generate_autotune_profile(
     feedback_adjustment = preset.get("_feedback_adjustment", "")
     personalization_source = preset.get("_personalization_source", "无历史反馈数据")
 
+    # v4.5: ML preference model fields
+    ml_model_available = preset.get("_ml_model_available", False)
+    ml_adjustment_applied = preset.get("_ml_adjustment_applied", False)
+    ml_adjustment_reason = preset.get("_ml_adjustment_reason", "")
+    ml_candidate_before = preset.get("_ml_candidate_before", preset_name)
+    ml_candidate_after = preset.get("_ml_candidate_after", preset_name)
+    ml_confidence = preset.get("_ml_confidence", 0.0)
+    ml_training_sample_count = preset.get("_ml_training_sample_count", 0)
+
     # v3.8: feedback-driven parameter tuning
     fb_param_adj = preset.get("_feedback_parameter_adjustment", {})
     feedback_parameter_adjustment = fb_param_adj
@@ -1316,6 +1474,13 @@ def _generate_autotune_profile(
         "feedback_adjustment": feedback_adjustment,
         "personalization_source": personalization_source,
         "feedback_parameter_adjustment": feedback_parameter_adjustment,
+        "ml_model_available": ml_model_available,
+        "ml_adjustment_applied": ml_adjustment_applied,
+        "ml_adjustment_reason": ml_adjustment_reason,
+        "ml_candidate_before": ml_candidate_before,
+        "ml_candidate_after": ml_candidate_after,
+        "ml_confidence": ml_confidence,
+        "ml_training_sample_count": ml_training_sample_count,
         "backing_match": backing_match,
         "adaptation_reason": adaptation_reason,
         "reason": "；".join(reasons),
@@ -2591,6 +2756,179 @@ async def quality_check(
     }
 
 
+# ── v5.1 parameter tuner A/B check ──────────────────────────────────────────
+
+_TUNER_MODEL_PATH = BASE_DIR / "ml" / "models" / "autotune_parameter_tuner.json"
+
+
+@app.post("/parameter-tuner-check")
+async def parameter_tuner_check(
+    file: UploadFile = File(...),
+    key: str = Form("C"),
+    scale: str = Form("major"),
+):
+    """Generate A/B comparison WAVs: original preset vs parameter-tuner suggestion.
+
+    For each preset that has non-zero adjustment suggestions in the
+    parameter tuner model, generates two WAVs — the original preset and
+    a micro-tuned version applying the suggested parameter deltas.
+
+    Does NOT affect /process-vocal output.
+    """
+    if not _TUNER_MODEL_PATH.exists():
+        raise HTTPException(status_code=404, detail="Parameter tuner model not found. Run: python backend/ml/train_parameter_tuner.py")
+
+    try:
+        tuner = json.loads(_TUNER_MODEL_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        raise HTTPException(status_code=500, detail="Could not parse parameter tuner model.")
+
+    adjustments = tuner.get("preset_specific_adjustments", {})
+    active = {k: v for k, v in adjustments.items()
+              if v.get("suggested_correction_delta", 0) != 0 and v.get("sample_count", 0) >= 2}
+
+    if not active:
+        raise HTTPException(status_code=404, detail="参数学习样本不足，暂不生成微调试听版。")
+
+    # --- validate & convert vocal ---
+    if file.content_type not in ALLOWED_TYPES:
+        raise HTTPException(status_code=400, detail=f"Unsupported audio type: {file.content_type}")
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    if len(contents) > MAX_SIZE_BYTES:
+        raise HTTPException(status_code=413, detail="File exceeds 25 MB limit.")
+
+    suffix = Path(file.filename or "vocal.wav").suffix or ".wav"
+    vocal_id = uuid.uuid4().hex
+    raw_path = UPLOAD_DIR / f"tuner_raw_{vocal_id}{suffix}"
+    raw_path.write_bytes(contents)
+    wav_path = PROCESSED_DIR / f"tuner_source_{vocal_id}.wav"
+
+    try:
+        analysis = _convert_to_wav(raw_path, wav_path)
+    except CouldntDecodeError:
+        raw_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="Could not decode audio.")
+    except FileNotFoundError:
+        raw_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail="ffmpeg not installed.")
+
+    # --- generate comparison pairs ---
+    pairs: list[dict] = []
+    for pname, adj in active.items():
+        pdef = MAINSTREAM_AUTOTUNE_PRESETS[pname]
+
+        # Original profile
+        orig_profile = {
+            "preset_name": pname, "preset_label": pdef["preset_label"],
+            "style_mode": PRESET_TO_STYLE[pname],
+            "retune_speed": pdef["retune_speed"],
+            "correction_amount": pdef["correction_amount"],
+            "humanize": pdef["humanize"],
+            "formant_preserve": pdef["formant_preserve"],
+            "vibrato_preserve": pdef["vibrato_preserve"],
+            "target_key": key, "target_scale": scale,
+            "target_scale_label": "小调" if scale == "minor" else "大调",
+            "confidence": 100, "preset_source": "tuner_original",
+            "vocal_quality": "normal",
+        }
+
+        # Tuned profile: clamp deltas to safe ranges.
+        cd = adj.get("suggested_correction_delta", 0)
+        rd = adj.get("suggested_retune_ms_delta", 0)
+        hd = adj.get("suggested_humanize_delta", 0)
+
+        tuned_corr = max(5, min(98, pdef["correction_amount"] + cd))
+        # Convert retune_ms delta to retune_speed delta (approx)
+        tuned_retune_ms = max(0, min(200, pdef["retune_ms_equivalent"] + rd))
+        # Map ms back to speed: using the inverse of _retune_speed_to_ms heuristically
+        if tuned_retune_ms <= 0:
+            tuned_retune_speed = 99
+        elif tuned_retune_ms <= 8:
+            tuned_retune_speed = max(78, pdef["retune_speed"] - int(abs(rd) * 2))
+        else:
+            tuned_retune_speed = max(10, pdef["retune_speed"] - int(rd * 1.5))
+        tuned_hum = max(2, min(98, pdef["humanize"] + hd))
+
+        tuned_profile = {
+            "preset_name": pname, "preset_label": pdef["preset_label"] + "（学习微调）",
+            "style_mode": PRESET_TO_STYLE[pname],
+            "retune_speed": tuned_retune_speed,
+            "correction_amount": tuned_corr,
+            "humanize": tuned_hum,
+            "formant_preserve": pdef["formant_preserve"],
+            "vibrato_preserve": pdef["vibrato_preserve"],
+            "target_key": key, "target_scale": scale,
+            "target_scale_label": "小调" if scale == "minor" else "大调",
+            "confidence": 100, "preset_source": "tuner_adjusted",
+            "vocal_quality": "normal",
+        }
+
+        # Generate both WAVs
+        try:
+            audio_orig = AudioSegment.from_file(wav_path)
+            processed_orig = _apply_autotune_preview(audio_orig, orig_profile, analysis)
+            orig_name = f"tuner_{pname}_orig_{vocal_id}.wav"
+            orig_path = PROCESSED_DIR / orig_name
+            processed_orig.export(orig_path, format="wav")
+
+            audio_tuned = AudioSegment.from_file(wav_path)
+            processed_tuned = _apply_autotune_preview(audio_tuned, tuned_profile, analysis)
+            tuned_name = f"tuner_{pname}_tuned_{vocal_id}.wav"
+            tuned_path = PROCESSED_DIR / tuned_name
+            processed_tuned.export(tuned_path, format="wav")
+        except Exception:
+            logging.exception("Tuner check processing failed for %s", pname)
+            continue
+
+        pairs.append({
+            "preset_name": pname,
+            "preset_label": pdef["preset_label"],
+            "original_params": {
+                "correction_amount": pdef["correction_amount"],
+                "retune_ms_equivalent": pdef["retune_ms_equivalent"],
+                "retune_speed": pdef["retune_speed"],
+                "humanize": pdef["humanize"],
+                "formant_preserve": pdef["formant_preserve"],
+                "vibrato_preserve": pdef["vibrato_preserve"],
+            },
+            "tuned_params": {
+                "correction_amount": tuned_corr,
+                "retune_ms_equivalent": tuned_retune_ms,
+                "retune_speed": tuned_retune_speed,
+                "humanize": tuned_hum,
+                "formant_preserve": pdef["formant_preserve"],
+                "vibrato_preserve": pdef["vibrato_preserve"],
+            },
+            "parameter_delta": {
+                "correction_amount": cd,
+                "retune_ms_equivalent": rd,
+                "humanize": hd,
+            },
+            "reason": adj.get("reason", ""),
+            "original_download_url": f"/download/{orig_name}",
+            "tuned_download_url": f"/download/{tuned_name}",
+        })
+
+    if not pairs:
+        raise HTTPException(status_code=404, detail="No comparison pairs could be generated.")
+
+    return {
+        "vocal_id": vocal_id,
+        "source_download_url": f"/download/tuner_source_{vocal_id}.wav",
+        "key": key, "scale": scale,
+        "tuner_confidence": tuner.get("confidence", 0),
+        "sample_count": tuner.get("sample_count", 0),
+        "pairs": pairs,
+        "how_to_compare": (
+            "1. Download each pair (original vs tuned).  "
+            "2. Label the tuned version: tuner_better / tuner_same / tuner_worse.  "
+            "3. Feedback will include original_params, tuned_params, and parameter_delta."
+        ),
+    }
+
+
 @app.get("/download/{filename}")
 def download_file(filename: str):
     """Download a processed WAV file by filename.
@@ -2683,7 +3021,8 @@ async def submit_feedback(body: FeedbackRequest):
 
 QUALITY_FEEDBACK_PATH = FEEDBACK_DIR / "autotune_listening.jsonl"
 
-VALID_QC_LABELS = {"best", "too_fake", "too_light", "too_heavy", "harsh", "natural", "good"}
+VALID_QC_LABELS = {"best", "too_fake", "too_light", "too_heavy", "harsh", "natural", "good",
+                    "tuner_better", "tuner_same", "tuner_worse"}
 
 VALID_QC_RATINGS = {1, 2, 3, 4, 5}
 
@@ -2695,6 +3034,11 @@ class QualityFeedbackRequest(BaseModel):
     label: str | None = None
     note: str | None = None
     backing_style: str | None = None
+    # v5.1: parameter tuner comparison metadata
+    compared_against_preset: str | None = None
+    original_params: dict | None = None
+    tuned_params: dict | None = None
+    parameter_delta: dict | None = None
 
 
 @app.post("/quality-feedback")
@@ -2749,6 +3093,15 @@ async def submit_quality_feedback(body: QualityFeedbackRequest):
         record["note"] = body.note
     if body.backing_style is not None:
         record["backing_style"] = body.backing_style
+    # v5.1: parameter tuner comparison metadata
+    if body.compared_against_preset is not None:
+        record["compared_against_preset"] = body.compared_against_preset
+    if body.original_params is not None:
+        record["original_params"] = body.original_params
+    if body.tuned_params is not None:
+        record["tuned_params"] = body.tuned_params
+    if body.parameter_delta is not None:
+        record["parameter_delta"] = body.parameter_delta
 
     try:
         with open(QUALITY_FEEDBACK_PATH, "a", encoding="utf-8") as fh:
@@ -2766,6 +3119,36 @@ async def submit_quality_feedback(body: QualityFeedbackRequest):
         body.vocal_id, body.preset_name, body.label, body.rating,
     )
 
+    # v4.6: auto-retrain ML model after every feedback record.
+    # This is a secondary flow — feedback save is primary and must never fail.
+    # Lazy imports avoid circular dependency with build/train scripts.
+    training_dataset_updated = False
+    preference_model_updated = False
+    model_training_sample_count = 0
+    model_confidence = 0.0
+    parameter_tuner_updated = False
+    parameter_tuner_confidence = 0.0
+    training_error: str | None = None
+
+    try:
+        from backend.ml.build_training_dataset import build as _build_ds
+        from backend.ml.train_preference_model import train as _train_model
+        from backend.ml.train_parameter_tuner import train as _train_tuner
+
+        n_samples = _build_ds()
+        training_dataset_updated = n_samples > 0
+        model = _train_model()
+        preference_model_updated = True
+        model_training_sample_count = model.get("training_sample_count", 0)
+        model_confidence = model.get("confidence", 0.0)
+
+        tuner_model = _train_tuner()
+        parameter_tuner_updated = True
+        parameter_tuner_confidence = tuner_model.get("confidence", 0.0)
+    except Exception as exc:
+        logging.exception("ML auto-retrain failed (non-fatal — feedback saved)")
+        training_error = str(exc)
+
     # v4.2: auto-update agent inbox after every feedback record
     try:
         _update_agent_inbox()
@@ -2778,6 +3161,15 @@ async def submit_quality_feedback(body: QualityFeedbackRequest):
         "preset_name": body.preset_name,
         "label": body.label,
         "rating": body.rating,
+        # v4.6 ML auto-train fields
+        "training_dataset_updated": training_dataset_updated,
+        "preference_model_updated": preference_model_updated,
+        "model_training_sample_count": model_training_sample_count,
+        "model_confidence": model_confidence,
+        # v5.0 parameter tuner fields
+        "parameter_tuner_updated": parameter_tuner_updated,
+        "parameter_tuner_confidence": parameter_tuner_confidence,
+        "training_error": training_error,
     }
 
 
@@ -2818,6 +3210,662 @@ def debug_agent_inbox():
             "An AI agent can read it directly from disk.  "
             "It is auto-updated after every POST /quality-feedback."
         ),
+    }
+
+
+@app.get("/debug/ml-training-dataset-summary")
+def debug_ml_dataset_summary():
+    """Return a summary of the ML training dataset.
+
+    Reads ``backend/feedback/autotune_listening.jsonl``, computes per-preset
+    sample counts and positive/negative splits.  Does NOT load the full
+    dataset into memory — counts only.
+
+    Returns zero counts when no feedback file exists.
+    """
+    records = _load_all_feedback_records()
+
+    positive_labels = {"best", "good", "natural"}
+    negative_labels = {"too_fake", "harsh", "too_heavy"}
+
+    total = len(records)
+    positive_count = sum(1 for r in records if r.get("label") in positive_labels)
+    negative_count = sum(1 for r in records if r.get("label") in negative_labels)
+    neutral_count = total - positive_count - negative_count
+
+    per_preset: dict[str, dict] = {}
+    for pname in MAINSTREAM_AUTOTUNE_PRESETS:
+        per_preset[pname] = {"total": 0, "positive": 0, "negative": 0}
+
+    for r in records:
+        pname = r.get("preset_name", "")
+        if pname not in per_preset:
+            continue
+        label = r.get("label", "")
+        per_preset[pname]["total"] += 1
+        if label in positive_labels:
+            per_preset[pname]["positive"] += 1
+        elif label in negative_labels:
+            per_preset[pname]["negative"] += 1
+
+    return {
+        "status": "ok",
+        "feedback_file_exists": QUALITY_FEEDBACK_PATH.exists(),
+        "total_samples": total,
+        "positive_samples": positive_count,
+        "negative_samples": negative_count,
+        "neutral_samples": neutral_count,
+        "per_preset_samples": {
+            pname: {
+                "total": s["total"],
+                "positive": s["positive"],
+                "negative": s["negative"],
+                "preset_label": MAINSTREAM_AUTOTUNE_PRESETS[pname]["preset_label"],
+            }
+            for pname, s in per_preset.items() if s["total"] > 0
+        },
+        "training_data_path": str(
+            (BASE_DIR / "ml" / "data" / "autotune_training_data.jsonl").resolve()
+        ),
+        "build_command": "python backend/ml/build_training_dataset.py",
+    }
+
+
+@app.get("/debug/ml-preference-model-summary")
+def debug_ml_model_summary():
+    """Return a summary of the trained preference model.
+
+    Reads ``backend/ml/models/autotune_preference_model.json`` if it exists.
+    Returns empty status when no model has been trained yet.
+    """
+    MODEL_PATH = BASE_DIR / "ml" / "models" / "autotune_preference_model.json"
+    if not MODEL_PATH.exists():
+        return {
+            "status": "no_model",
+            "model_path": str(MODEL_PATH),
+            "hint": "Run: python backend/ml/train_preference_model.py",
+        }
+
+    try:
+        model = json.loads(MODEL_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {"status": "error", "detail": "Could not parse model file."}
+
+    return {
+        "status": "ok",
+        "model_path": str(MODEL_PATH),
+        "model_version": model.get("model_version"),
+        "model_type": model.get("model_type"),
+        "trained_at": model.get("trained_at"),
+        "training_sample_count": model.get("training_sample_count", 0),
+        "confidence": model.get("confidence", 0),
+        "preset_scores": model.get("preset_scores", {}),
+        "global_liked_param_ranges": model.get("global_liked_param_ranges", {}),
+    }
+
+
+@app.get("/debug/ml-recommendation-preview")
+def debug_ml_recommendation_preview(
+    candidate_preset: str = "modern_pop",
+    intensity_group: str = "balanced",
+):
+    """Preview what the ML preference model would do to a candidate preset.
+
+    Query params:
+    - ``candidate_preset``: one of the 7 preset names (default: modern_pop)
+    - ``intensity_group``: conservative / balanced / aggressive / extreme
+
+    Returns the model's nudge decision without actually changing any state.
+    """
+    GROUPS = {
+        "conservative": ["live_tracking", "natural_pop"],
+        "balanced": ["natural_pop", "modern_pop", "emotional_rnb"],
+        "aggressive": ["modern_pop", "emotional_rnb", "melodic_trap", "trap_polished"],
+        "extreme": ["melodic_trap", "trap_polished", "hyperpop"],
+    }
+    group = GROUPS.get(intensity_group, GROUPS["balanced"])
+
+    if candidate_preset not in MAINSTREAM_AUTOTUNE_PRESETS:
+        return {"status": "error", "detail": f"Unknown preset: {candidate_preset!r}"}
+
+    model = _load_ml_preference_model()
+    if model is None:
+        return {
+            "status": "no_model",
+            "candidate_preset": candidate_preset,
+            "hint": "Run: python backend/ml/train_preference_model.py",
+        }
+
+    result = _apply_ml_preference_nudge(candidate_preset, model, group)
+    return {
+        "status": "ok",
+        "model_confidence": model.get("confidence", 0),
+        "training_sample_count": model.get("training_sample_count", 0),
+        "candidate_preset": candidate_preset,
+        "intensity_group": intensity_group,
+        "allowed_presets_in_group": group,
+        "would_adjust": result["adjusted"],
+        "new_preset": result["new_name"],
+        "reason": result["reason"],
+        "preset_scores_in_group": {
+            p: model.get("preset_scores", {}).get(p, {})
+            for p in group
+            if p in model.get("preset_scores", {})
+        },
+    }
+
+
+@app.get("/debug/ml-auto-train-status")
+def debug_ml_auto_train_status():
+    """Return the current auto-train pipeline status.
+
+    Reports whether the training dataset and preference model exist,
+    their sample counts, confidence, and last-trained timestamps.
+    """
+    dataset_path = BASE_DIR / "ml" / "data" / "autotune_training_data.jsonl"
+    model_path = _ML_MODEL_PATH
+    feedback_path = QUALITY_FEEDBACK_PATH
+
+    dataset_exists = dataset_path.exists()
+    model_exists = model_path.exists()
+    feedback_exists = feedback_path.exists()
+
+    dataset_sample_count = 0
+    if dataset_exists:
+        try:
+            with open(dataset_path, "r", encoding="utf-8") as fh:
+                dataset_sample_count = sum(1 for line in fh if line.strip())
+        except Exception:
+            pass
+
+    last_feedback_count = 0
+    if feedback_exists:
+        try:
+            with open(feedback_path, "r", encoding="utf-8") as fh:
+                last_feedback_count = sum(1 for line in fh if line.strip())
+        except Exception:
+            pass
+
+    model_confidence = 0.0
+    last_model_trained_at = None
+    training_sample_count = 0
+    if model_exists:
+        try:
+            model = json.loads(model_path.read_text(encoding="utf-8"))
+            model_confidence = model.get("confidence", 0)
+            last_model_trained_at = model.get("trained_at")
+            training_sample_count = model.get("training_sample_count", 0)
+        except Exception:
+            pass
+
+    return {
+        "status": "ok",
+        "dataset_file_exists": dataset_exists,
+        "dataset_sample_count": dataset_sample_count,
+        "model_file_exists": model_exists,
+        "training_sample_count": training_sample_count,
+        "model_confidence": model_confidence,
+        "last_model_trained_at": last_model_trained_at,
+        "last_feedback_count": last_feedback_count,
+        "ml_will_be_used_next_recommendation": model_exists and model_confidence >= 0.5,
+        "auto_retrain_enabled": True,
+        "retrain_trigger": "POST /quality-feedback success",
+    }
+
+
+@app.get("/debug/autotune-decision-explain")
+def debug_decision_explain(
+    backing_style: str = "",
+    beat_style: str = "",
+    autotune_strength: int = 50,
+    key: str = "C",
+    scale: str = "major",
+):
+    """Explain every step of the Auto-Tune preset selection pipeline.
+
+    Simulates a full auto-mode matching run and returns a detailed trace:
+    rule_candidate → feedback_candidate → ml_candidate → final_preset.
+
+    No audio file is needed — this is a pure logic trace using the supplied
+    parameters and any existing feedback / ML model data.
+    """
+    # Minimal analysis dict (assume normal quality).
+    analysis = {"duration_seconds": 15, "too_quiet": False, "clipped_risk": False}
+    sim_backing: dict | None = None
+    if backing_style.strip():
+        sim_backing = {"style": backing_style.strip()}
+
+    # Run the full matching pipeline.
+    matched = _match_autotune_preset_auto(
+        beat_style=beat_style.strip() or "流行节奏",
+        scale=scale,
+        analysis=analysis,
+        strength_preference=autotune_strength,
+        backing=sim_backing,
+    )
+
+    # ---- assemble explanation ---------------------------------------------
+    rule_candidate = matched.get("_rule_candidate", matched["preset_name"])
+    feedback_candidate = matched["preset_name"]  # after feedback nudge, before ML
+    # Check if feedback nudge changed the name
+    fb_nudged = matched.get("_feedback_nudge", False)
+    if not fb_nudged:
+        # If feedback nudge didn't fire, feedback_candidate = rule_candidate
+        # But gap detection might have fired — check
+        gap_fired = matched.get("_gap_detected", False)
+        if not gap_fired:
+            feedback_candidate = rule_candidate
+
+    ml_candidate = matched.get("_ml_candidate_after", matched["preset_name"])
+    final_preset = matched["preset_name"]
+
+    ml_model_available = matched.get("_ml_model_available", False)
+    ml_applied = matched.get("_ml_adjustment_applied", False)
+    ml_reason = matched.get("_ml_adjustment_reason", "")
+    ml_confidence = matched.get("_ml_confidence", 0.0)
+
+    # ML non-activation reason
+    if not ml_model_available:
+        ml_non_activation = "无 ML 模型文件（运行 python backend/ml/train_preference_model.py 生成）"
+    elif ml_applied:
+        ml_non_activation = "—（ML 已生效）"
+    elif "quality_override" in matched.get("_source_note", "").lower():
+        ml_non_activation = "音质保护优先（too_quiet / clipped_risk），ML 不执行"
+    elif "样本不足" in ml_reason:
+        ml_non_activation = "目标 preset 样本不足（< 3 条），ML 仅记录不调整"
+    elif "同组无可替换" in ml_reason or "无可替换" in ml_reason:
+        ml_non_activation = "同组内无更优 preset，ML 保持当前选择"
+    elif "分数差距" in ml_reason or "评分" in ml_reason:
+        ml_non_activation = "同组内目标 preset 分数差距不足（需 ≥ 2 分）"
+    else:
+        ml_non_activation = ml_reason if ml_reason else "未触发 ML 调整条件"
+
+    # ---- top presets from ML model ----------------------------------------
+    top_positive: list[dict] = []
+    top_negative: list[dict] = []
+    model = _load_ml_preference_model()
+    if model:
+        scores = model.get("preset_scores", {})
+        ranked = sorted(scores.items(), key=lambda x: x[1].get("avg_score", 0), reverse=True)
+        for pname, ps in ranked[:3]:
+            if ps.get("sample_count", 0) >= 1:
+                top_positive.append({
+                    "preset_name": pname,
+                    "preset_label": ps.get("preset_label", ""),
+                    "avg_score": ps.get("avg_score", 0),
+                    "sample_count": ps.get("sample_count", 0),
+                })
+        ranked_neg = sorted(scores.items(), key=lambda x: x[1].get("avg_score", 0))
+        for pname, ps in ranked_neg[:3]:
+            if ps.get("sample_count", 0) >= 1:
+                top_negative.append({
+                    "preset_name": pname,
+                    "preset_label": ps.get("preset_label", ""),
+                    "avg_score": ps.get("avg_score", 0),
+                    "sample_count": ps.get("sample_count", 0),
+                })
+
+    # ---- relevant feedback summary -----------------------------------------
+    preferences = _load_autotune_feedback_preferences()
+    feedback_summary: dict[str, dict] = {}
+    for pname in [rule_candidate, final_preset]:
+        if pname and pname not in feedback_summary:
+            pref = preferences.get(pname, {})
+            if pref.get("count", 0) > 0:
+                feedback_summary[pname] = {
+                    "preset_label": MAINSTREAM_AUTOTUNE_PRESETS[pname]["preset_label"],
+                    "score": pref.get("score", 0),
+                    "count": pref.get("count", 0),
+                    "too_light": pref.get("too_light_count", 0),
+                    "too_fake_harsh": pref.get("too_fake_harsh_count", 0),
+                }
+
+    # ---- final used params ------------------------------------------------
+    final_params = {
+        "correction_amount": matched["correction_amount"],
+        "retune_speed": matched["retune_speed"],
+        "retune_ms_equivalent": matched.get("retune_ms_equivalent",
+            _retune_speed_to_ms(matched["retune_speed"])),
+        "humanize": matched["humanize"],
+        "formant_preserve": matched["formant_preserve"],
+        "vibrato_preserve": matched["vibrato_preserve"],
+        "style_mode": PRESET_TO_STYLE.get(final_preset, ""),
+    }
+
+    # ---- quality override -------------------------------------------------
+    quality_override_active = bool(
+        matched.get("_source_note", "") and
+        ("过低" in matched["_source_note"] or "爆音" in matched["_source_note"])
+    )
+
+    return {
+        "decision_chain": {
+            "rule_candidate": rule_candidate,
+            "feedback_candidate": feedback_candidate,
+            "ml_candidate": ml_candidate,
+            "final_preset": final_preset,
+        },
+        "quality_override_active": quality_override_active,
+        "ml_model_available": ml_model_available,
+        "ml_adjustment_applied": ml_applied,
+        "ml_adjustment_reason": ml_reason,
+        "ml_non_activation_reason": ml_non_activation,
+        "model_confidence": ml_confidence,
+        "training_sample_count": model.get("training_sample_count", 0) if model else 0,
+        "top_positive_presets": top_positive,
+        "top_negative_presets": top_negative,
+        "relevant_feedback_summary": feedback_summary,
+        "final_used_params": final_params,
+        "sample_sufficiency_note": (
+            "样本不足，ML 仅记录，不强制调整"
+            if ml_model_available and not ml_applied and "样本不足" in ml_reason
+            else None
+        ),
+        "preset_labels": {
+            rule_candidate: MAINSTREAM_AUTOTUNE_PRESETS[rule_candidate]["preset_label"],
+            feedback_candidate: MAINSTREAM_AUTOTUNE_PRESETS.get(feedback_candidate, {}).get("preset_label", feedback_candidate),
+            final_preset: MAINSTREAM_AUTOTUNE_PRESETS[final_preset]["preset_label"],
+        },
+    }
+
+
+@app.get("/debug/autotune-strategy-compare")
+def debug_strategy_compare(
+    backing_style: str = "",
+    beat_style: str = "",
+    autotune_strength: int = 50,
+    key: str = "C",
+    scale: str = "major",
+):
+    """Compare three recommendation strategies on the same inputs.
+
+    - **rule_only**: pure rule-based matching (no feedback, no ML)
+    - **feedback_aware**: rules + feedback nudge (v3.5)
+    - **ml_aware**: rules + feedback nudge + ML nudge (v4.5, current production)
+
+    Returns per-strategy preset details plus a comparison summary that
+    tells you whether ML is actually making a difference.
+    """
+    analysis = {"duration_seconds": 15, "too_quiet": False, "clipped_risk": False}
+    sim_backing: dict | None = None
+    if backing_style.strip():
+        sim_backing = {"style": backing_style.strip()}
+    beat = beat_style.strip() or "流行节奏"
+
+    def _strategy_result(matched: dict) -> dict:
+        pname = matched["preset_name"]
+        pdef = MAINSTREAM_AUTOTUNE_PRESETS[pname]
+        return {
+            "preset_name": pname,
+            "preset_label": pdef["preset_label"],
+            "reason": matched.get("_source_note", ""),
+            "correction_amount": matched["correction_amount"],
+            "retune_ms_equivalent": matched.get("retune_ms_equivalent",
+                _retune_speed_to_ms(matched["retune_speed"])),
+            "humanize": matched["humanize"],
+            "formant_preserve": matched["formant_preserve"],
+            "vibrato_preserve": matched["vibrato_preserve"],
+            "style_mode": PRESET_TO_STYLE.get(pname, ""),
+            "expected_character": pdef.get("description", ""),
+            "risk": pdef.get("risk", ""),
+        }
+
+    # --- ml_aware: full pipeline (current production) -----------------------
+    ml_aware_matched = _match_autotune_preset_auto(
+        beat, scale, analysis, autotune_strength, backing=sim_backing,
+    )
+    ml_aware = _strategy_result(ml_aware_matched)
+
+    # --- feedback_aware: rule + feedback nudge, no ML -----------------------
+    # Temporarily hide ML model so the matcher skips it.
+    fb_matched = None
+    model_existed = _ML_MODEL_PATH.exists()
+    model_backup: bytes | None = None
+    try:
+        if model_existed:
+            model_backup = _ML_MODEL_PATH.read_bytes()
+            _ML_MODEL_PATH.unlink()
+        fb_matched = _match_autotune_preset_auto(
+            beat, scale, analysis, autotune_strength, backing=sim_backing,
+        )
+    finally:
+        if model_backup is not None:
+            _ML_MODEL_PATH.write_bytes(model_backup)
+    feedback_aware = _strategy_result(fb_matched) if fb_matched else ml_aware
+
+    # --- rule_only: pure rules, no feedback, no ML --------------------------
+    # Temporarily hide both feedback file and ML model.
+    rule_matched = None
+    fb_existed = QUALITY_FEEDBACK_PATH.exists()
+    fb_backup: bytes | None = None
+    model_backup2: bytes | None = None
+    try:
+        if fb_existed:
+            fb_backup = QUALITY_FEEDBACK_PATH.read_bytes()
+            QUALITY_FEEDBACK_PATH.unlink()
+        if _ML_MODEL_PATH.exists():
+            model_backup2 = _ML_MODEL_PATH.read_bytes()
+            _ML_MODEL_PATH.unlink()
+        rule_matched = _match_autotune_preset_auto(
+            beat, scale, analysis, autotune_strength, backing=sim_backing,
+        )
+    finally:
+        if fb_backup is not None:
+            QUALITY_FEEDBACK_PATH.write_bytes(fb_backup)
+        if model_backup2 is not None:
+            _ML_MODEL_PATH.write_bytes(model_backup2)
+    rule_only = _strategy_result(rule_matched) if rule_matched else ml_aware
+
+    # --- comparison summary -------------------------------------------------
+    r_name = rule_only["preset_name"]
+    f_name = feedback_aware["preset_name"]
+    m_name = ml_aware["preset_name"]
+
+    rule_vs_fb = r_name != f_name
+    fb_vs_ml = f_name != m_name
+
+    if not rule_vs_fb and not fb_vs_ml:
+        diff_level = "none"
+        rec = "三种策略一致 — 当前规则和学习结果完全对齐，无需调整。"
+    elif rule_vs_fb and not fb_vs_ml:
+        diff_level = "subtle"
+        rec = (
+            f"反馈调整生效（{r_name} → {f_name}），但 ML 未进一步调整。"
+            "反馈数据已影响推荐，ML 模型可能样本不足或保守处理。"
+        )
+    elif not rule_vs_fb and fb_vs_ml:
+        diff_level = "medium"
+        rec = (
+            f"ML 单独调整（{f_name} → {m_name}）。"
+            "规则和反馈一致，但 ML 模型根据历史偏好进一步优化。"
+            f"理由：{ml_aware_matched.get('_ml_adjustment_reason', '未知')[:120]}"
+        )
+    elif rule_vs_fb and fb_vs_ml:
+        diff_level = "strong"
+        ml_reason = ml_aware_matched.get("_ml_adjustment_reason", "")
+        rec = (
+            f"反馈和 ML 都调整了推荐（{r_name} → {f_name} → {m_name}）。"
+            f"ML 理由：{ml_reason[:150]}"
+        )
+    else:
+        diff_level = "subtle"
+        rec = "策略间存在差异，建议检查具体 preset 参数。"
+
+    return {
+        "strategies": {
+            "rule_only": rule_only,
+            "feedback_aware": feedback_aware,
+            "ml_aware": ml_aware,
+        },
+        "comparison_summary": {
+            "rule_vs_feedback_changed": rule_vs_fb,
+            "feedback_vs_ml_changed": fb_vs_ml,
+            "final_difference_level": diff_level,
+            "recommendation": rec,
+        },
+        "ml_model_available_at_time": _ML_MODEL_PATH.exists(),
+        "feedback_available_at_time": QUALITY_FEEDBACK_PATH.exists(),
+    }
+
+
+@app.get("/debug/autotune-experiment-plan")
+def debug_experiment_plan(
+    backing_style: str = "",
+    beat_style: str = "",
+    autotune_strength: int = 50,
+    key: str = "C",
+    scale: str = "major",
+):
+    """Generate a next-round A/B listening test plan based on current data.
+
+    Analyzes feedback coverage gaps, ML model confidence, and strategy
+    alignment to recommend which presets to test next — and which to skip.
+    """
+    preferences = _load_autotune_feedback_preferences()
+    model = _load_ml_preference_model()
+    strategy = debug_strategy_compare(
+        backing_style=backing_style, beat_style=beat_style,
+        autotune_strength=autotune_strength, key=key, scale=scale,
+    )
+    current_rec = strategy["strategies"]["ml_aware"]["preset_name"]
+
+    all_presets = sorted(MAINSTREAM_AUTOTUNE_PRESETS.keys())
+    total_samples = sum(p.get("count", 0) for p in preferences.values())
+    model_conf = model.get("confidence", 0) if model else 0
+
+    # ---- classify presets --------------------------------------------------
+    under_tested: list[dict] = []
+    high_uncertainty: list[dict] = []
+    disliked: list[dict] = []
+    stop_testing: list[dict] = []
+
+    for pname in all_presets:
+        pref = preferences.get(pname, {})
+        ps = (model.get("preset_scores", {}).get(pname, {}) if model else {})
+        n = pref.get("count", 0)
+        pos_rate = ps.get("positive_rate", 0) if ps else 0
+        neg_rate = ps.get("negative_rate", 0) if ps else 0
+        label = MAINSTREAM_AUTOTUNE_PRESETS[pname]["preset_label"]
+
+        entry = {
+            "preset_name": pname, "preset_label": label,
+            "sample_count": n, "positive_rate": pos_rate, "negative_rate": neg_rate,
+        }
+
+        if n < 3:
+            under_tested.append(entry)
+        elif neg_rate >= 0.7 and n >= 3:
+            stop_testing.append(entry)
+        elif neg_rate >= 0.5:
+            disliked.append(entry)
+        if n >= 3 and 0.25 <= pos_rate <= 0.65 and 0.25 <= neg_rate <= 0.65:
+            high_uncertainty.append(entry)
+
+    # ---- build recommended next tests --------------------------------------
+    recommended: list[dict] = []
+    reasons: list[str] = []
+    already_picked: set[str] = set()
+
+    def _add(pname: str, reason: str):
+        if pname not in already_picked and len(recommended) < 3:
+            recommended.append({"preset_name": pname,
+                "preset_label": MAINSTREAM_AUTOTUNE_PRESETS[pname]["preset_label"]})
+            reasons.append(reason)
+            already_picked.add(pname)
+
+    # Priority 1: gap pattern
+    mt_pref = preferences.get("melodic_trap", {})
+    hp_pref = preferences.get("hyperpop", {})
+    if mt_pref.get("too_light_count", 0) > 0 and hp_pref.get("too_fake_harsh_count", 0) > 0:
+        _add("trap_polished", "缺口检测：melodic_trap 太轻 + hyperpop 太假 → 优先验证 trap_polished")
+
+    # Priority 2: under-tested presets near current recommendation
+    intensity_order = ["live_tracking", "natural_pop", "emotional_rnb",
+                       "modern_pop", "melodic_trap", "trap_polished", "hyperpop"]
+    if current_rec in intensity_order:
+        idx = intensity_order.index(current_rec)
+        neighbors = [intensity_order[i] for i in [idx-1, idx+1]
+                     if 0 <= i < len(intensity_order)]
+        for nb in neighbors:
+            if any(u["preset_name"] == nb for u in under_tested):
+                _add(nb, f"当前推荐 {current_rec} 的相邻 preset，样本不足需要补测")
+
+    # Priority 3: remaining under-tested
+    for ut in under_tested:
+        _add(ut["preset_name"],
+             f"样本仅 {ut['sample_count']} 条，需要更多反馈来确定偏好")
+
+    # Priority 4: high-uncertainty presets
+    for hu in high_uncertainty:
+        _add(hu["preset_name"],
+             f"正负反馈混杂（pos={hu['positive_rate']} neg={hu['negative_rate']}），需要更多数据来稳定评分")
+
+    # ---- suggested feedback focus ------------------------------------------
+    focus_items: list[str] = []
+    if total_samples < 8:
+        focus_items.append("优先关注整体修音量和自然人声保留的平衡")
+    if any(u["sample_count"] == 0 for u in under_tested):
+        focus_items.append("有 preset 完全未被测试过，先确认基本听感方向")
+    if model_conf >= 0.5:
+        focus_items.append("ML 模型已有一定置信度，关注推荐是否真的比规则更符合偏好")
+    else:
+        focus_items.append("ML 模型置信度不足，本轮重点是积累更多反馈而非依赖 ML")
+    gap = debug_gap_status()
+    if gap["gap_detected"]:
+        focus_items.append("存在反馈缺口，重点关注中间强度 preset 是否填补了空白")
+
+    return {
+        "current_recommendation": current_rec,
+        "model_confidence": model_conf,
+        "training_sample_count": total_samples,
+        "strategy_alignment": strategy["comparison_summary"]["final_difference_level"],
+        "under_tested_presets": under_tested,
+        "high_uncertainty_presets": high_uncertainty,
+        "disliked_presets": disliked,
+        "stop_testing_presets": stop_testing,
+        "recommended_next_tests": [
+            {"preset_name": r["preset_name"], "preset_label": r["preset_label"], "reason": reasons[i]}
+            for i, r in enumerate(recommended)
+        ],
+        "suggested_feedback_focus": focus_items if focus_items else ["继续收集反馈以提升模型置信度"],
+        "how_to_decide": (
+            "1. 优先测试 recommended_next_tests 中的 preset。"
+            "2. stop_testing_presets 中的 preset 暂停测试（负反馈过高）。"
+            "3. 每个版本至少给 1 个标签（best / too_light / too_fake 等）。"
+            "4. 累积 ≥ 15 条总反馈后，ML 模型置信度将 ≥ 0.5。"
+        ),
+    }
+
+
+@app.get("/debug/ml-parameter-tuner-summary")
+def debug_ml_parameter_tuner_summary():
+    """Return a summary of the parameter-level preference model."""
+    TUNER_PATH = BASE_DIR / "ml" / "models" / "autotune_parameter_tuner.json"
+    if not TUNER_PATH.exists():
+        return {
+            "status": "no_model",
+            "model_path": str(TUNER_PATH),
+            "hint": "Run: python backend/ml/train_parameter_tuner.py",
+        }
+    try:
+        model = json.loads(TUNER_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {"status": "error", "detail": "Could not parse model file."}
+
+    return {
+        "status": "ok",
+        "model_exists": True,
+        "sample_count": model.get("sample_count", 0),
+        "confidence": model.get("confidence", 0),
+        "adjustment_confidence": model.get("adjustment_confidence", 0),
+        "liked_param_ranges": model.get("liked_param_ranges", {}),
+        "disliked_param_ranges": model.get("disliked_param_ranges", {}),
+        "preset_specific_adjustments": model.get("preset_specific_adjustments", {}),
+        "tuner_feedback_summary": model.get("tuner_feedback_summary", {}),
+        "accepted_adjustments": model.get("accepted_adjustments", {}),
+        "rejected_adjustments": model.get("rejected_adjustments", {}),
+        "low_impact_adjustments": model.get("low_impact_adjustments", {}),
+        "note": model.get("note", ""),
     }
 
 
@@ -3044,6 +4092,151 @@ def _load_all_feedback_records() -> list[dict]:
     return records
 
 
+def _param_tuner_summary_text() -> str:
+    """Build a parameter-level learning summary for the agent inbox."""
+    TUNER_PATH = BASE_DIR / "ml" / "models" / "autotune_parameter_tuner.json"
+    if not TUNER_PATH.exists():
+        return "- **参数学习模型**: 未训练\n"
+    try:
+        model = json.loads(TUNER_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return "- **参数学习模型**: 文件损坏\n"
+
+    n = model.get("sample_count", 0)
+    conf = model.get("confidence", 0)
+    lines = [
+        f"- **训练样本数**: {n}",
+        f"- **置信度**: {conf}",
+    ]
+
+    adjustments = model.get("preset_specific_adjustments", {})
+    active = {k: v for k, v in adjustments.items()
+              if v.get("suggested_correction_delta", 0) != 0}
+    if active:
+        lines.append("- **建议调整的 preset**:")
+        for pname, adj in active.items():
+            cd = adj.get("suggested_correction_delta", 0)
+            rd = adj.get("suggested_retune_ms_delta", 0)
+            hd = adj.get("suggested_humanize_delta", 0)
+            sign_c = "+" if cd > 0 else ""
+            sign_r = "+" if rd > 0 else ""
+            sign_h = "+" if hd > 0 else ""
+            ac = adj.get("adjustment_confidence", 0.5)
+            lines.append(
+                f"  - {adj['preset_label']} ({pname}): "
+                f"corr {sign_c}{cd}, retune {sign_r}{rd}ms, humanize {sign_h}{hd} "
+                f"(置信度 {ac:.0%}) — {adj.get('reason','')}"
+            )
+    else:
+        lines.append("- **建议调整的 preset**: 无（反馈信号不足或参数已合适）")
+
+    accepted = model.get("accepted_adjustments", {})
+    rejected = model.get("rejected_adjustments", {})
+    low_impact = model.get("low_impact_adjustments", {})
+    if accepted:
+        lines.append("- **✅ 听感验证通过**:")
+        for pname, a in accepted.items():
+            lines.append(f"  - {a['preset_label']} ({pname}): tuner_better={a['better_count']}次")
+    if rejected:
+        lines.append("- **❌ 听感验证拒绝**:")
+        for pname, a in rejected.items():
+            rolled = "已回退" if a.get("rolled_back") else "已减弱"
+            lines.append(f"  - {a['preset_label']} ({pname}): tuner_worse={a['worse_count']}次 ({rolled})")
+    if low_impact:
+        lines.append("- **➖ 听不出差异**:")
+        for pname, a in low_impact.items():
+            lines.append(f"  - {a['preset_label']} ({pname}): tuner_same={a['same_count']}/{a['total']}")
+
+    lines.append("- **注意**: 参数调整建议未自动应用，需人工审核。")
+    return "\n".join(lines) + "\n"
+
+
+def _decision_summary_text() -> str:
+    """Build a one-paragraph decision chain summary for the agent inbox."""
+    try:
+        analysis = {"duration_seconds": 15, "too_quiet": False, "clipped_risk": False}
+        m = _match_autotune_preset_auto("流行节奏", "major", analysis, 50, backing=None)
+        rc = m.get("_rule_candidate", "?")
+        fc = m["preset_name"]
+        ml_app = m.get("_ml_adjustment_applied", False)
+        ml_reason = m.get("_ml_adjustment_reason", "")
+        final = m["preset_name"]
+
+        labels = {}
+        for n in [rc, fc, final]:
+            labels[n] = MAINSTREAM_AUTOTUNE_PRESETS.get(n, {}).get("preset_label", n)
+
+        parts = [f"规则推荐 → **{labels.get(rc, rc)}**"]
+        if fc != rc:
+            parts.append(f"反馈调整 → **{labels.get(fc, fc)}**")
+        if ml_app:
+            parts.append(f"ML 调整 → **{labels.get(final, final)}** ({ml_reason[:80]})")
+        elif m.get("_ml_model_available"):
+            parts.append(f"ML 检查 → 未调整（{ml_reason[:80]}）")
+        else:
+            parts.append("ML → 无模型")
+        return " > ".join(parts) + "\n"
+    except Exception:
+        return "- _(无法生成决策摘要)_\n"
+
+
+def _ml_model_status_text() -> str:
+    """Build a human-readable ML model status block for the agent inbox."""
+    model = _load_ml_preference_model()
+    if model is None:
+        return (
+            "- **模型状态**: 未训练\n"
+            "- **下一次推荐**: 不会使用 ML 模型（无模型文件）\n"
+            "- **操作**: 提交更多 A/B 听感反馈以触发自动训练\n"
+        )
+
+    n = model.get("training_sample_count", 0)
+    conf = model.get("confidence", 0)
+    scores = model.get("preset_scores", {})
+
+    # Find top liked and disliked presets
+    top_liked = None
+    top_disliked = None
+    best_score = -999
+    worst_score = 999
+    for pname, ps in scores.items():
+        avg = ps.get("avg_score", 0)
+        n_samples = ps.get("sample_count", 0)
+        if n_samples >= 2 and avg > best_score:
+            best_score = avg
+            top_liked = (pname, ps)
+        if n_samples >= 2 and avg < worst_score:
+            worst_score = avg
+            top_disliked = (pname, ps)
+
+    will_use = "会" if conf >= 0.5 else "不会（置信度不足）"
+
+    lines = [
+        f"- **训练样本数**: {n}",
+        f"- **模型置信度**: {conf}",
+        f"- **下一次推荐是否会使用 ML**: {will_use}",
+    ]
+    if top_liked:
+        lines.append(
+            f"- **最受欢迎 preset**: {top_liked[0]} "
+            f"({top_liked[1].get('preset_label','')}) "
+            f"avg_score={top_liked[1].get('avg_score',0)} "
+            f"n={top_liked[1].get('sample_count',0)}"
+        )
+    if top_disliked:
+        lines.append(
+            f"- **最不受欢迎 preset**: {top_disliked[0]} "
+            f"({top_disliked[1].get('preset_label','')}) "
+            f"avg_score={top_disliked[1].get('avg_score',0)} "
+            f"n={top_disliked[1].get('sample_count',0)}"
+        )
+    if not top_liked and not top_disliked:
+        lines.append("- **注意**: 样本数不足，尚无明确的偏好趋势")
+
+    lines.append(f"- **模型文件**: `{_ML_MODEL_PATH}`")
+    return "\n".join(lines) + "\n"
+
+
 def _update_agent_inbox():
     """Write the current feedback snapshot as a Markdown task file for AI agents.
 
@@ -3106,6 +4299,18 @@ def _update_agent_inbox():
 ## Recent Feedback (last 10)
 
 {chr(10).join(recent_lines) if recent_lines else '  _(no records yet)_'}
+
+## ML Model Status (v4.6 auto-retrain)
+
+{_ml_model_status_text()}
+
+## 当前推荐解释摘要 (v4.7)
+
+{_decision_summary_text()}
+
+## 参数级学习摘要 (v5.0)
+
+{_param_tuner_summary_text()}
 
 ## Agent 下一步任务
 
